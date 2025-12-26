@@ -9,7 +9,7 @@ namespace breeze::core {
 
 class Kernel {
 public:
-    Kernel() { breeze::http::Route::set_router(router_); }
+    Kernel() {}
 
     breeze::http::Router& router() { return router_; }
     const breeze::http::Router& router() const { return router_; }

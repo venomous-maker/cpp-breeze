@@ -19,6 +19,7 @@ target_include_directories(breeze
 
 file(GLOB_RECURSE BREEZE_SOURCES CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/routes/*.cpp"
 )
 
 list(FILTER BREEZE_SOURCES EXCLUDE REGEX "/src/commands/.*\\.cpp$")
@@ -37,29 +38,32 @@ install(TARGETS breeze
 
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include/" DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
-install(EXPORT breezeTargets
-  FILE breezeTargets.cmake
-  NAMESPACE breeze::
-  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/breeze
+# install(EXPORT breezeTargets
+#   FILE breezeTargets.cmake
+#   NAMESPACE breeze::
+#   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/breeze
+# )
+# Fixes the CMP0135 warning for 2025 standards
+cmake_policy(SET CMP0135 NEW)
+
+include(FetchContent)
+
+FetchContent_Declare(
+        nlohmann_json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG v3.11.3  # or a specific version you want
 )
 
-configure_package_config_file(
-  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/breeze-config.cmake.in"
-  "${CMAKE_CURRENT_BINARY_DIR}/breeze-config.cmake"
-  INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/breeze
-)
+FetchContent_MakeAvailable(nlohmann_json)
 
-write_basic_package_version_file(
-  "${CMAKE_CURRENT_BINARY_DIR}/breeze-config-version.cmake"
-  VERSION ${PROJECT_VERSION}
-  COMPATIBILITY SameMajorVersion
-)
+# Link using the target name provided by the library
+target_link_libraries(breeze PUBLIC nlohmann_json::nlohmann_json)
 
-install(FILES
-  "${CMAKE_CURRENT_BINARY_DIR}/breeze-config.cmake"
-  "${CMAKE_CURRENT_BINARY_DIR}/breeze-config-version.cmake"
-  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/breeze
-)
+# install(EXPORT breezeTargets
+#   FILE breezeTargets.cmake
+#   NAMESPACE breeze::
+#   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/breeze
+# )
 
 if(BREEZE_BUILD_EXAMPLES)
   add_executable(breeze_example examples/basic.cpp)
@@ -71,6 +75,7 @@ target_link_libraries(breeze_app PRIVATE breeze::breeze)
 
 if(BREEZE_BUILD_CLI)
   add_executable(breeze_cli src/commands/cli.cpp)
+  target_link_libraries(breeze_cli PRIVATE breeze::breeze)
 endif()
 
 if(BREEZE_BUILD_TESTS)

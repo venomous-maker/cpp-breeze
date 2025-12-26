@@ -1,0 +1,20 @@
+{
+    "database": {
+        "default": "sqlite",
+        "connections": {
+            "sqlite": {
+                "driver": "sqlite",
+                "database": "database/database.sqlite",
+                "prefix": ""
+            },
+            "mysql": {
+                "driver": "mysql",
+                "host": "127.0.0.1",
+                "port": "3306",
+                "database": "breeze",
+                "username": "root",
+                "password": ""
+            }
+        }
+    }
+}

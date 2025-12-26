@@ -1,0 +1,19 @@
+#pragma once
+#include <breeze/http/controller.hpp>
+#include <breeze/http/response.hpp>
+#include <breeze/http/request.hpp>
+
+class HomeController : public breeze::http::Controller {
+public:
+    breeze::http::Response index(const breeze::http::Request& req) {
+        return breeze::http::Response::ok("Welcome to the Breeze Framework Home Page!");
+    }
+
+    breeze::http::Response about(const breeze::http::Request& req) {
+        return breeze::http::Response::ok("Breeze is a Laravel-inspired C++ web framework.");
+    }
+    
+    breeze::http::Response contact(const breeze::http::Request& req) {
+        return breeze::http::Response::ok("Contact us at support@breeze-framework.com");
+    }
+};

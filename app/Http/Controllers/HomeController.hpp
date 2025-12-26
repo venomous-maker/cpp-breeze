@@ -6,7 +6,13 @@
 class HomeController : public breeze::http::Controller {
 public:
     breeze::http::Response index(const breeze::http::Request& req) {
-        return breeze::http::Response::ok("Welcome to the Breeze Framework Home Page!");
+        return breeze::http::Response::view("index", {
+            {"title", "Breeze Home"},
+            {"message", "Hello from Breeze View Engine!"},
+            {"show_user", true},
+            {"user", {{"name", "Junie"}}},
+            {"features", {"Fast", "Laravel-inspired", "C++20", "Service Container"}}
+        });
     }
 
     breeze::http::Response about(const breeze::http::Request& req) {

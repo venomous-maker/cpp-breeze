@@ -8,6 +8,7 @@ A Laravel-inspired C++ web framework designed for high performance, ease of use,
 - **Dependency Injection Container**: A powerful DI container for managing class dependencies and performing auto-wiring.
 - **Middleware Support**: Easily intercept and modify requests and responses.
 - **Configuration & Environment**: Load configuration from JSON files and manage environment variables via `.env` files.
+- **View Engine**: A Laravel Blade-inspired view engine with support for variable parsing, `@if`, `@unless`, and `@foreach` directives.
 - **Artisan-like CLI**: A built-in command-line interface for common tasks like serving the application.
 - **Modern C++**: Built with C++20 for performance and safety.
 
@@ -111,6 +112,31 @@ Access them in your code:
 
 ```cpp
 std::string name = breeze::support::Env::get("APP_NAME");
+```
+
+### Views and Templates
+
+Breeze supports simple HTML templates with data binding. Place your templates in `resources/views`.
+
+**Template (`resources/views/welcome.html`):**
+```html
+<h1>Hello, {{ name }}!</h1>
+@if(show_features)
+<ul>
+    @foreach(features as feature)
+        <li>{{ feature }}</li>
+    @endforeach
+</ul>
+@endif
+```
+
+**Controller:**
+```cpp
+return Response::view("welcome", {
+    {"name", "Developer"},
+    {"show_features", true},
+    {"features", {"Fast", "Easy", "C++"}}
+});
 ```
 
 ## Contributing

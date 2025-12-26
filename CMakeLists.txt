@@ -14,6 +14,7 @@ target_compile_features(breeze PUBLIC cxx_std_20)
 target_include_directories(breeze
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
     $<INSTALL_INTERFACE:include>
 )
 
@@ -80,5 +81,8 @@ endif()
 
 if(BREEZE_BUILD_TESTS)
   enable_testing()
+  add_executable(view_test tests/view_test.cpp)
+  target_link_libraries(view_test PRIVATE breeze::breeze)
+  add_test(NAME view_test COMMAND view_test)
   add_subdirectory(tests)
 endif()

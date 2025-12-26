@@ -98,14 +98,7 @@ public:
     }
     
     static Response view(const std::string& template_name, 
-                        const nlohmann::json& data = {}) {
-        // In a real implementation, this would render a template
-        Response res{StatusCode::OK};
-        res.content_type("text/html");
-        // Template rendering would go here
-        res.set_body("<!-- Template: " + template_name + " -->");
-        return res;
-    }
+                        const nlohmann::json& data = {});
     
     static Response not_found(std::string message = "Not Found") {
         return Response{StatusCode::NotFound, std::move(message)};

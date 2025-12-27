@@ -6,6 +6,12 @@
 #include <algorithm>
 #include <unordered_map>
 #include <memory>
+#include <filesystem>
+#include <mutex>
+#include <list>
+#include <chrono>
+#include <cmath>
+#include <fstream>
 
 namespace breeze::support {
 
@@ -172,7 +178,7 @@ private:
             if (auto p = get_json_ptr(tok, ctx_); p) return *p; return nullptr;
         }
         if (std::isdigit(static_cast<unsigned char>(str_[pos_])) || (str_[pos_] == '-' && pos_ + 1 < str_.size() && std::isdigit(static_cast<unsigned char>(str_[pos_ + 1])))) {
-            size_t start = pos_; if (str_[pos_] == '-') ++pos_; while (pos_ < str_.size() && std::isdigit(static_cast<unsigned char>(str_[pos_])))) ++pos_; if (pos_ < str_.size() && str_[pos_] == '.') { ++pos_; while (pos_ < str_.size() && std::isdigit(static_cast<unsigned char>(str_[pos_]))) ++pos_; }
+            size_t start = pos_; if (str_[pos_] == '-') ++pos_; while (pos_ < str_.size() && std::isdigit(static_cast<unsigned char>(str_[pos_]))) ++pos_; if (pos_ < str_.size() && str_[pos_] == '.') { ++pos_; while (pos_ < str_.size() && std::isdigit(static_cast<unsigned char>(str_[pos_]))) ++pos_; }
             std::string num = str_.substr(start, pos_ - start); try { return std::stod(num); } catch (...) { throw ExprError("Invalid number literal", str_, start); }
         }
         throw ExprError("Unexpected token in expression", str_, pos_);
@@ -214,10 +220,105 @@ struct Node {
     std::string item_name;
 };
 
-static std::unordered_map<size_t, std::shared_ptr<Node>> template_cache;
+// forward declaration of parse_nodes so compilation unit can reference it earlier
+static std::vector<std::shared_ptr<Node>> parse_nodes(const std::string& s, size_t start, const std::string& end_tag="");
 
-// forward
-static std::shared_ptr<Node> compile_template(const std::string& tpl);
+// Replace the previous template_cache with a thread-safe LRU cache keyed by file path + mtime
+struct CacheKey {
+    std::filesystem::path path;
+    std::filesystem::file_time_type mtime;
+};
+
+static inline bool operator==(const CacheKey& a, const CacheKey& b) {
+    return a.path == b.path && a.mtime == b.mtime;
+}
+
+struct CacheKeyHash {
+    std::size_t operator()(CacheKey const& k) const noexcept {
+        auto h1 = std::hash<std::string>{}(k.path.string());
+        auto h2 = std::hash<std::uint64_t>{}(static_cast<std::uint64_t>(k.mtime.time_since_epoch().count()));
+        return h1 ^ (h2 << 1);
+    }
+};
+
+// LRU cache entry
+struct CacheEntry {
+    std::shared_ptr<Node> ast;
+    std::chrono::steady_clock::time_point created;
+};
+
+static std::mutex cache_mutex;
+static std::list<CacheKey> lru_list; // most recently used at front
+static std::unordered_map<CacheKey, CacheEntry, CacheKeyHash> file_cache;
+static size_t CACHE_MAX_ITEMS = 128;
+static std::chrono::seconds CACHE_TTL = std::chrono::seconds(300); // 5 minutes
+
+static void cache_put(const CacheKey& key, std::shared_ptr<Node> ast) {
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    // evict if needed
+    if (file_cache.size() >= CACHE_MAX_ITEMS) {
+        // remove least recently used from back
+        if (!lru_list.empty()) {
+            auto old = lru_list.back();
+            file_cache.erase(old);
+            lru_list.pop_back();
+        }
+    }
+    // insert at front
+    lru_list.push_front(key);
+    file_cache[key] = CacheEntry{ast, std::chrono::steady_clock::now()};
+}
+
+static std::shared_ptr<Node> cache_get(const CacheKey& key) {
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    auto it = file_cache.find(key);
+    if (it == file_cache.end()) return nullptr;
+    // check TTL
+    auto now = std::chrono::steady_clock::now();
+    if (now - it->second.created > CACHE_TTL) {
+        // expired
+        file_cache.erase(it);
+        // remove from lru_list
+        lru_list.remove(key);
+        return nullptr;
+    }
+    // move to front of LRU
+    lru_list.remove(key);
+    lru_list.push_front(key);
+    return it->second.ast;
+}
+
+// Updated compile_template that takes file cache key
+static std::shared_ptr<Node> compile_template_from_content(const std::string& tpl) {
+    // hash content to key the in-memory cache when using direct content (non-file)
+    size_t key = std::hash<std::string>{}(tpl);
+    // reuse existing simple cache for content-based templates to avoid recompile
+    static std::mutex content_cache_mutex;
+    static std::unordered_map<size_t, std::shared_ptr<Node>> content_cache;
+    std::lock_guard<std::mutex> lock(content_cache_mutex);
+    if (auto it = content_cache.find(key); it != content_cache.end()) return it->second;
+    auto root = std::make_shared<Node>(); root->type = Node::TEXT; root->children = parse_nodes(tpl, 0);
+    content_cache.emplace(key, root);
+    return root;
+}
+
+// New function to compile from file path using file-based cache
+static std::shared_ptr<Node> compile_template_from_file(const std::filesystem::path& path) {
+    try {
+        auto mtime = std::filesystem::last_write_time(path);
+        CacheKey key{path, mtime};
+        if (auto ast = cache_get(key); ast) return ast;
+        // read file
+        std::ifstream file(path);
+        if (!file) return nullptr;
+        std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        auto ast = std::make_shared<Node>(); ast->type = Node::TEXT; ast->children = parse_nodes(content, 0);
+        cache_put(key, ast);
+        return ast;
+    } catch (...) {
+        return nullptr;
+    }
+}
 
 // parse helpers: find next token position among {{, @if(, @unless(, @foreach(, @endif, @endunless, @endforeach
 static size_t find_next_special(const std::string& s, size_t start) {
@@ -255,7 +356,7 @@ static std::vector<FilterSpec> parse_filters(const std::string& s) {
     return out;
 }
 
-static std::vector<std::shared_ptr<Node>> parse_nodes(const std::string& s, size_t start, const std::string& end_tag="") {
+static std::vector<std::shared_ptr<Node>> parse_nodes(const std::string& s, size_t start, const std::string& end_tag) {
     std::vector<std::shared_ptr<Node>> nodes;
     size_t pos = start;
     while (pos < s.size()) {
@@ -362,12 +463,8 @@ static std::vector<std::shared_ptr<Node>> parse_nodes(const std::string& s, size
 }
 
 static std::shared_ptr<Node> compile_template(const std::string& tpl) {
-    size_t key = std::hash<std::string>{}(tpl);
-    if (auto it = template_cache.find(key); it != template_cache.end()) return it->second;
-    auto root = std::make_shared<Node>(); root->type = Node::TEXT; // root container, children used
-    root->children = parse_nodes(tpl, 0);
-    template_cache.emplace(key, root);
-    return root;
+    // forward to content-based compilation/cache
+    return compile_template_from_content(tpl);
 }
 
 // --- rendering ---
@@ -476,12 +573,25 @@ static std::string render_nodes(const std::vector<std::shared_ptr<Node>>& nodes,
     return out;
 }
 
+// Update Blade::render to use compile_template_from_content
 std::string Blade::render(std::string_view tpl, const nlohmann::json& context) const {
     std::string content{tpl};
-    auto root = compile_template(content);
-    // root->children holds top-level nodes
+    auto root = compile_template_from_content(content);
     try {
         return render_nodes(root->children, context);
+    } catch (const ExprError& e) {
+        std::ostringstream oss; oss << "[Template Error: expr=\"" << e.expr << "\" pos=" << e.pos << " msg=" << e.what() << "]"; return oss.str();
+    } catch (const std::exception& ex) {
+        std::ostringstream oss; oss << "[Template Error: msg=" << ex.what() << "]"; return oss.str();
+    }
+}
+
+// Implement render_from_file using file-based cache
+std::string Blade::render_from_file(const std::filesystem::path& file_path, const nlohmann::json& context) const {
+    auto ast = compile_template_from_file(file_path);
+    if (!ast) return "View not found: " + file_path.string();
+    try {
+        return render_nodes(ast->children, context);
     } catch (const ExprError& e) {
         std::ostringstream oss; oss << "[Template Error: expr=\"" << e.expr << "\" pos=" << e.pos << " msg=" << e.what() << "]"; return oss.str();
     } catch (const std::exception& ex) {

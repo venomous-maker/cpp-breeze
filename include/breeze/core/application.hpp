@@ -35,7 +35,11 @@ public:
     }
 
     static std::shared_ptr<Application> create() {
-        return std::make_shared<Application>();
+        // Create and register the global singleton so Application::instance() and
+        // the created shared_ptr refer to the same Application.
+        singleton_ = std::make_shared<Application>();
+        instance_initialized_ = true;
+        return singleton_;
     }
     
     Container& container() { return container_; }
@@ -52,14 +56,21 @@ public:
     }
 
     void run(int port = 8080) {
+        // Ensure singleton instance is set
+        if (!instance_initialized_) {
+            instance_initialized_ = true;
+        }
+        
         boot();
         
         // Finalize routing
         finalize_routing();
 
         breeze::http::Server server([this](const breeze::http::Request& req) {
+            // Use this Application instance to handle the request (not a separate singleton)
             return this->handle(req);
         });
+        
         server.listen("0.0.0.0", port);
     }
     
@@ -79,8 +90,16 @@ public:
     
     // Singleton instance access
     static Application& instance() {
-        static auto app = Application::create();
-        return *app;
+        if (!singleton_) {
+            // Lazily create the singleton if not set
+            singleton_ = std::make_shared<Application>();
+            instance_initialized_ = true;
+        }
+        return *singleton_;
+    }
+
+    static bool has_instance() {
+        return instance_initialized_;
     }
     
     // Environment helpers
@@ -90,6 +109,8 @@ public:
     void finalize_routing();
 
 private:
+    static inline bool instance_initialized_ = false;
+    static inline std::shared_ptr<Application> singleton_ = nullptr;
     void bootstrap() {
         // Load .env file
         breeze::support::Env::load(".env");

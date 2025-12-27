@@ -60,11 +60,11 @@ FetchContent_MakeAvailable(nlohmann_json)
 # Link using the target name provided by the library
 target_link_libraries(breeze PUBLIC nlohmann_json::nlohmann_json)
 
-# install(EXPORT breezeTargets
+#install(EXPORT breezeTargets
 #   FILE breezeTargets.cmake
 #   NAMESPACE breeze::
 #   DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/breeze
-# )
+#)
 
 if(BREEZE_BUILD_EXAMPLES)
   add_executable(breeze_example examples/basic.cpp)

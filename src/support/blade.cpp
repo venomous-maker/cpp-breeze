@@ -1,4 +1,5 @@
 #include <breeze/support/blade.hpp>
+#include <breeze/core/application.hpp>
 
 #include <regex>
 #include <sstream>
@@ -223,248 +224,327 @@ struct Node {
 // forward declaration of parse_nodes so compilation unit can reference it earlier
 static std::vector<std::shared_ptr<Node>> parse_nodes(const std::string& s, size_t start, const std::string& end_tag="");
 
-// Replace the previous template_cache with a thread-safe LRU cache keyed by file path + mtime
-struct CacheKey {
-    std::filesystem::path path;
-    std::filesystem::file_time_type mtime;
-};
-
-static inline bool operator==(const CacheKey& a, const CacheKey& b) {
-    return a.path == b.path && a.mtime == b.mtime;
+// We'll need a fast content hash for cache keys (FNV-1a)
+static std::uint64_t fnv1a_hash64(const std::string& s) {
+    const std::uint64_t fnv_offset = 14695981039346656037ull;
+    const std::uint64_t fnv_prime = 1099511628211ull;
+    std::uint64_t hash = fnv_offset;
+    for (unsigned char c : s) { hash ^= c; hash *= fnv_prime; }
+    return hash;
 }
 
-struct CacheKeyHash {
-    std::size_t operator()(CacheKey const& k) const noexcept {
-        auto h1 = std::hash<std::string>{}(k.path.string());
-        auto h2 = std::hash<std::uint64_t>{}(static_cast<std::uint64_t>(k.mtime.time_since_epoch().count()));
-        return h1 ^ (h2 << 1);
-    }
+// New cache key: file path + content hash
+struct FileCacheKey {
+    std::filesystem::path path;
+    std::uint64_t content_hash;
 };
+static inline bool operator==(const FileCacheKey& a, const FileCacheKey& b) { return a.path == b.path && a.content_hash == b.content_hash; }
+struct FileCacheKeyHash { std::size_t operator()(FileCacheKey const& k) const noexcept { return std::hash<std::string>{}(k.path.string()) ^ (std::hash<std::uint64_t>{}(k.content_hash) << 1); } };
 
-// LRU cache entry
+// LRU cache structures (thread-safe)
+static std::mutex cache_mutex;
+static std::list<FileCacheKey> lru_list; // front = most recently used
+// Define CacheEntry used by the cache map
 struct CacheEntry {
     std::shared_ptr<Node> ast;
     std::chrono::steady_clock::time_point created;
 };
-
-static std::mutex cache_mutex;
-static std::list<CacheKey> lru_list; // most recently used at front
-static std::unordered_map<CacheKey, CacheEntry, CacheKeyHash> file_cache;
+static std::unordered_map<FileCacheKey, std::pair<CacheEntry, std::list<FileCacheKey>::iterator>, FileCacheKeyHash> file_content_cache;
 static size_t CACHE_MAX_ITEMS = 128;
-static std::chrono::seconds CACHE_TTL = std::chrono::seconds(300); // 5 minutes
+static std::chrono::seconds CACHE_TTL = std::chrono::seconds(300); // default 5 minutes
+static bool INLINE_CPP_ENABLED = false; // default, can be set from app config
 
-static void cache_put(const CacheKey& key, std::shared_ptr<Node> ast) {
+// Add basic cache stats
+struct CacheStats { size_t hits = 0; size_t misses = 0; size_t entries = 0; };
+static CacheStats cache_stats_data;
+
+// helper: ensure cache directory exists
+static std::filesystem::path view_cache_dir() {
+    std::filesystem::path p = "storage/framework/views";
+    std::error_code ec;
+    std::filesystem::create_directories(p, ec);
+    return p;
+}
+
+// Serialize AST (Node) to JSON for disk cache
+static nlohmann::json node_to_json(const std::shared_ptr<Node>& node) {
+    nlohmann::json j;
+    j["type"] = static_cast<int>(node->type);
+    j["text"] = node->text;
+    j["expr"] = node->expr;
+    // filters
+    j["filters"] = nlohmann::json::array();
+    for (const auto& f : node->filters) {
+        nlohmann::json fj;
+        fj["name"] = f.name;
+        fj["arg"] = f.arg;
+        j["filters"].push_back(fj);
+    }
+    // children
+    j["children"] = nlohmann::json::array();
+    for (const auto& c : node->children) j["children"].push_back(node_to_json(c));
+    j["list_name"] = node->list_name;
+    j["item_name"] = node->item_name;
+    return j;
+}
+
+static std::shared_ptr<Node> json_to_node(const nlohmann::json& j) {
+    auto n = std::make_shared<Node>();
+    n->type = static_cast<Node::Type>(j.value("type", 0));
+    n->text = j.value("text", std::string{});
+    n->expr = j.value("expr", std::string{});
+    if (j.contains("filters") && j["filters"].is_array()) {
+        for (const auto& fj : j["filters"]) {
+            FilterSpec f{fj.value("name", std::string{}), fj.value("arg", std::string{})};
+            n->filters.push_back(f);
+        }
+    }
+    if (j.contains("children") && j["children"].is_array()) {
+        for (const auto& cj : j["children"]) n->children.push_back(json_to_node(cj));
+    }
+    n->list_name = j.value("list_name", std::string{});
+    n->item_name = j.value("item_name", std::string{});
+    return n;
+}
+
+// LRU cache put/get
+static void cache_put_file(const FileCacheKey& key, std::shared_ptr<Node> ast) {
     std::lock_guard<std::mutex> lock(cache_mutex);
-    // evict if needed
-    if (file_cache.size() >= CACHE_MAX_ITEMS) {
-        // remove least recently used from back
-        if (!lru_list.empty()) {
-            auto old = lru_list.back();
-            file_cache.erase(old);
+    auto it = file_content_cache.find(key);
+    if (it != file_content_cache.end()) {
+        // update entry and move to front
+        it->second.first.ast = ast;
+        it->second.first.created = std::chrono::steady_clock::now();
+        lru_list.erase(it->second.second);
+        lru_list.push_front(key);
+        it->second.second = lru_list.begin();
+    } else {
+        // insert
+        lru_list.push_front(key);
+        CacheEntry entry{ast, std::chrono::steady_clock::now()};
+        file_content_cache.emplace(key, std::make_pair(entry, lru_list.begin()));
+        // evict if over capacity
+        while (file_content_cache.size() > CACHE_MAX_ITEMS) {
+            auto last = lru_list.back();
+            auto fit = file_content_cache.find(last);
+            if (fit != file_content_cache.end()) file_content_cache.erase(fit);
             lru_list.pop_back();
         }
     }
-    // insert at front
-    lru_list.push_front(key);
-    file_cache[key] = CacheEntry{ast, std::chrono::steady_clock::now()};
+    cache_stats_data.entries = file_content_cache.size();
 }
 
-static std::shared_ptr<Node> cache_get(const CacheKey& key) {
+static std::shared_ptr<Node> cache_get_file(const FileCacheKey& key) {
     std::lock_guard<std::mutex> lock(cache_mutex);
-    auto it = file_cache.find(key);
-    if (it == file_cache.end()) return nullptr;
+    auto it = file_content_cache.find(key);
+    if (it == file_content_cache.end()) { cache_stats_data.misses++; return nullptr; }
     // check TTL
     auto now = std::chrono::steady_clock::now();
-    if (now - it->second.created > CACHE_TTL) {
+    if (now - it->second.first.created > CACHE_TTL) {
         // expired
-        file_cache.erase(it);
-        // remove from lru_list
-        lru_list.remove(key);
+        lru_list.erase(it->second.second);
+        file_content_cache.erase(it);
+        cache_stats_data.entries = file_content_cache.size();
+        cache_stats_data.misses++;
         return nullptr;
     }
-    // move to front of LRU
-    lru_list.remove(key);
+    // move to front
+    lru_list.erase(it->second.second);
     lru_list.push_front(key);
-    return it->second.ast;
+    it->second.second = lru_list.begin();
+    cache_stats_data.hits++;
+    return it->second.first.ast;
 }
 
-// Updated compile_template that takes file cache key
-static std::shared_ptr<Node> compile_template_from_content(const std::string& tpl) {
-    // hash content to key the in-memory cache when using direct content (non-file)
-    size_t key = std::hash<std::string>{}(tpl);
-    // reuse existing simple cache for content-based templates to avoid recompile
-    static std::mutex content_cache_mutex;
-    static std::unordered_map<size_t, std::shared_ptr<Node>> content_cache;
-    std::lock_guard<std::mutex> lock(content_cache_mutex);
-    if (auto it = content_cache.find(key); it != content_cache.end()) return it->second;
-    auto root = std::make_shared<Node>(); root->type = Node::TEXT; root->children = parse_nodes(tpl, 0);
-    content_cache.emplace(key, root);
-    return root;
+// Disk cache helpers: write/read compiled AST JSON
+static void write_ast_to_disk(const FileCacheKey& key, const std::shared_ptr<Node>& ast) {
+    try {
+        auto dir = view_cache_dir();
+        std::string fname = std::to_string(key.content_hash) + ".json";
+        std::filesystem::path p = dir / fname;
+        nlohmann::json j = node_to_json(ast);
+        std::ofstream ofs(p);
+        if (ofs) ofs << j.dump();
+    } catch (...) {}
 }
 
-// New function to compile from file path using file-based cache
+static std::shared_ptr<Node> read_ast_from_disk(const FileCacheKey& key) {
+    try {
+        auto dir = view_cache_dir();
+        std::string fname = std::to_string(key.content_hash) + ".json";
+        std::filesystem::path p = dir / fname;
+        if (!std::filesystem::exists(p)) return nullptr;
+        std::ifstream ifs(p);
+        if (!ifs) return nullptr;
+        nlohmann::json j; ifs >> j;
+        return json_to_node(j);
+    } catch (...) { return nullptr; }
+}
+
+// Clear cache API
+void Blade::clear_cache() {
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    file_content_cache.clear(); lru_list.clear(); cache_stats_data = CacheStats{};
+    // also clear disk cache files
+    try {
+        auto dir = view_cache_dir();
+        for (auto &entry : std::filesystem::directory_iterator(dir)) std::filesystem::remove(entry.path());
+    } catch (...) {}
+}
+
+nlohmann::json Blade::cache_stats() {
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    nlohmann::json out;
+    out["hits"] = cache_stats_data.hits;
+    out["misses"] = cache_stats_data.misses;
+    out["entries"] = file_content_cache.size();
+    out["max_items"] = CACHE_MAX_ITEMS;
+    out["ttl_seconds"] = CACHE_TTL.count();
+    return out;
+}
+
+// Helper to read file content
+static std::optional<std::string> read_file_to_string(const std::filesystem::path& path) {
+    try {
+        std::ifstream file(path);
+        if (!file) return std::nullopt;
+        std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        return content;
+    } catch (...) { return std::nullopt; }
+}
+
+// Inline C++ handling: detect @cpp{ ... } block
+static bool contains_inline_cpp(const std::string& content, std::string& cpp_code) {
+    size_t p = content.find("@cpp{");
+    if (p == std::string::npos) return false;
+    size_t start = p + 5;
+    // find matching closing '}' - naive single '}'
+    size_t end = content.find('}', start);
+    if (end == std::string::npos) return false;
+    cpp_code = content.substr(start, end - start);
+    return true;
+}
+
+// Try to compile inline cpp code to a temporary executable and run it, capturing stdout.
+// Returns optional<string> with output if success, nullopt on failure.
+static std::optional<std::string> compile_and_run_cpp(const std::string& code) {
+    // create temp source file
+    std::string id = std::to_string(std::hash<std::string>{}(code));
+    std::string tmp_src = "/tmp/breeze_inline_" + id + ".cpp";
+    std::string tmp_bin = "/tmp/breeze_inline_" + id + ".out";
+    {
+        std::ofstream ofs(tmp_src);
+        if (!ofs) return std::nullopt;
+        // wrap code in main if it doesn't have main
+        if (code.find("int main") == std::string::npos) {
+            ofs << "#include <iostream>\nusing namespace std;\nint main(){\n" << code << "\nreturn 0;\n}\n";
+        } else {
+            ofs << code;
+        }
+    }
+    // compile with g++
+    std::string cmd = "g++ -std=c++17 -O2 " + tmp_src + " -o " + tmp_bin + " 2>" + tmp_src + ".err";
+    int rc = std::system(cmd.c_str());
+    if (rc != 0) {
+        return std::nullopt;
+    }
+    // run and capture output
+    std::string run_cmd = tmp_bin + " > " + tmp_bin + ".out 2>&1";
+    rc = std::system(run_cmd.c_str());
+    if (rc != 0) {
+        return std::nullopt;
+    }
+    // read output file
+    std::optional<std::string> out = std::nullopt;
+    {
+        std::ifstream ifs(tmp_bin + ".out");
+        if (ifs) {
+            std::string s((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+            out = s;
+        }
+    }
+    return out;
+}
+
+// Fallback tiny interpreter: supports lines like print("text") or print(var)
+static std::string tiny_breeze_interpreter(const std::string& code, const nlohmann::json& ctx) {
+    std::istringstream ss(code);
+    std::string line;
+    std::string output;
+    while (std::getline(ss, line)) {
+        line = trim(line);
+        if (line.rfind("print(", 0) == 0) {
+            size_t a = line.find('(');
+            size_t b = line.rfind(')');
+            if (a != std::string::npos && b != std::string::npos && b > a) {
+                std::string inside = trim(line.substr(a+1, b - (a+1)));
+                // if quoted string
+                if ((inside.size() >= 2 && ((inside.front() == '"' && inside.back() == '"') || (inside.front() == '\'' && inside.back() == '\'')))) {
+                    output += inside.substr(1, inside.size()-2);
+                } else {
+                    // treat as identifier
+                    output += resolve_data_simple(inside, ctx);
+                }
+                output += '\n';
+            }
+        }
+    }
+    return output;
+}
+
+// Updated compile_template_from_file to use content-hash key and inline C++ processing with disk cache
 static std::shared_ptr<Node> compile_template_from_file(const std::filesystem::path& path) {
     try {
-        auto mtime = std::filesystem::last_write_time(path);
-        CacheKey key{path, mtime};
-        if (auto ast = cache_get(key); ast) return ast;
-        // read file
-        std::ifstream file(path);
-        if (!file) return nullptr;
-        std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        auto content_opt = read_file_to_string(path);
+        if (!content_opt) return nullptr;
+        auto content = *content_opt;
+        std::uint64_t chash = fnv1a_hash64(content);
+        FileCacheKey key{path, chash};
+        // check in-memory cache
+        if (auto ast = cache_get_file(key); ast) return ast;
+        // check on-disk cache
+        if (auto disk_ast = read_ast_from_disk(key); disk_ast) {
+            cache_put_file(key, disk_ast);
+            return disk_ast;
+        }
+        // detect inline cpp (only if enabled)
+        std::string cpp_code;
+        if (INLINE_CPP_ENABLED && contains_inline_cpp(content, cpp_code)) {
+            // attempt compile and run; store output as a TEXT node that returns the compiled output
+            if (auto out = compile_and_run_cpp(cpp_code); out) {
+                auto root = std::make_shared<Node>(); root->type = Node::TEXT; root->text = *out; cache_put_file(key, root); write_ast_to_disk(key, root); return root;
+            } else {
+                // fallback to embedding full content; interpreter will run at render time
+                auto root = std::make_shared<Node>(); root->type = Node::TEXT; root->text = content; cache_put_file(key, root); write_ast_to_disk(key, root); return root;
+            }
+        }
+        // parse and cache AST
         auto ast = std::make_shared<Node>(); ast->type = Node::TEXT; ast->children = parse_nodes(content, 0);
-        cache_put(key, ast);
+        cache_put_file(key, ast);
+        write_ast_to_disk(key, ast);
         return ast;
     } catch (...) {
         return nullptr;
     }
 }
 
-// parse helpers: find next token position among {{, @if(, @unless(, @foreach(, @endif, @endunless, @endforeach
-static size_t find_next_special(const std::string& s, size_t start) {
-    std::vector<size_t> pos;
-    auto add = [&](const std::string& t){ size_t p = s.find(t, start); if (p != std::string::npos) pos.push_back(p); };
-    add("{{"); add("@if("); add("@unless("); add("@foreach("); add("@endif"); add("@endunless"); add("@endforeach");
-    if (pos.empty()) return std::string::npos;
-    return *std::min_element(pos.begin(), pos.end());
-}
-
-static std::string extract_between(const std::string& s, size_t start, const std::string& open, const std::string& close) {
-    size_t p = s.find(open, start);
-    if (p == std::string::npos) return {};
-    size_t q = s.find(close, p + open.size());
-    if (q == std::string::npos) return {};
-    return s.substr(p + open.size(), q - (p + open.size()));
-}
-
-static std::vector<FilterSpec> parse_filters(const std::string& s) {
-    std::vector<FilterSpec> out;
-    std::istringstream ss(s);
-    std::string token;
-    while (std::getline(ss, token, '|')) {
-        token = trim(token);
-        if (token.empty()) continue;
-        // parse name(args?)
-        size_t p = token.find('(');
-        if (p == std::string::npos) { out.push_back({token, ""}); continue; }
-        size_t q = token.rfind(')');
-        std::string name = trim(token.substr(0, p));
-        std::string arg = "";
-        if (q != std::string::npos && q > p) arg = trim(token.substr(p+1, q - (p+1)));
-        out.push_back({name, arg});
+// Updated compile_template that takes file content and caches by content hash
+static std::shared_ptr<Node> compile_template_from_content(const std::string& tpl) {
+    // small in-memory content cache keyed by hash
+    static std::mutex content_cache_mutex;
+    static std::unordered_map<std::size_t, std::shared_ptr<Node>> content_cache;
+    std::size_t h = std::hash<std::string>{}(tpl);
+    {
+        std::lock_guard<std::mutex> lock(content_cache_mutex);
+        auto it = content_cache.find(h);
+        if (it != content_cache.end()) return it->second;
     }
-    return out;
-}
-
-static std::vector<std::shared_ptr<Node>> parse_nodes(const std::string& s, size_t start, const std::string& end_tag) {
-    std::vector<std::shared_ptr<Node>> nodes;
-    size_t pos = start;
-    while (pos < s.size()) {
-        size_t next = find_next_special(s, pos);
-        if (next == std::string::npos) {
-            // remaining text
-            auto n = std::make_shared<Node>(); n->type = Node::TEXT; n->text = s.substr(pos); nodes.push_back(n); break;
-        }
-        if (next > pos) {
-            auto n = std::make_shared<Node>(); n->type = Node::TEXT; n->text = s.substr(pos, next - pos); nodes.push_back(n);
-        }
-        // check what token starts at next
-        if (s.compare(next, 2, "{{") == 0) {
-            size_t close = s.find("}}", next+2);
-            if (close == std::string::npos) {
-                auto n = std::make_shared<Node>(); n->type = Node::TEXT; n->text = s.substr(next); nodes.push_back(n); break;
-            }
-            std::string inside = trim(s.substr(next+2, close - (next+2)));
-            // split filters by first '|'
-            size_t p = inside.find('|');
-            std::string expr = inside;
-            std::string filt_str;
-            if (p != std::string::npos) { expr = trim(inside.substr(0,p)); filt_str = inside.substr(p+1); }
-            auto n = std::make_shared<Node>(); n->type = Node::VAR; n->expr = expr; n->filters = parse_filters(filt_str); nodes.push_back(n);
-            pos = close + 2; continue;
-        }
-        if (s.compare(next, 4, "@if(") == 0) {
-            size_t open_par = next + 4;
-            size_t close_par = s.find(')', open_par);
-            if (close_par == std::string::npos) { pos = next + 4; continue; }
-            std::string cond = trim(s.substr(open_par, close_par - open_par));
-            // parse inner until matching @endif, respecting nested @if
-            size_t inner_start = close_par + 1;
-            std::string inner_end_tag = "@endif";
-            auto children = parse_nodes(s, inner_start, inner_end_tag);
-            auto n = std::make_shared<Node>(); n->type = Node::IF; n->expr = cond; n->children = std::move(children);
-            nodes.push_back(n);
-            // move pos to after the consumed end tag - parse_nodes will return positioned after end tag via finding it
-            // We need to find corresponding end tag position. We'll search for the matching end here.
-            size_t scan = inner_start; int depth = 1;
-            while (scan < s.size() && depth > 0) {
-                size_t a = s.find("@if(", scan);
-                size_t b = s.find("@endif", scan);
-                if (b == std::string::npos) { scan = s.size(); break; }
-                if (a != std::string::npos && a < b) { depth++; scan = a + 4; } else { depth--; scan = b + 6; }
-            }
-            pos = scan; continue;
-        }
-        if (s.compare(next, 8, "@unless(") == 0) {
-            size_t open_par = next + 8;
-            size_t close_par = s.find(')', open_par);
-            if (close_par == std::string::npos) { pos = next + 8; continue; }
-            std::string cond = trim(s.substr(open_par, close_par - open_par));
-            size_t inner_start = close_par + 1;
-            size_t scan = inner_start; int depth = 1;
-            while (scan < s.size() && depth > 0) {
-                size_t a = s.find("@unless(", scan);
-                size_t b = s.find("@endunless", scan);
-                if (b == std::string::npos) { scan = s.size(); break; }
-                if (a != std::string::npos && a < b) { depth++; scan = a + 8; } else { depth--; scan = b + 10; }
-            }
-            std::string inner = s.substr(inner_start, scan - inner_start - std::string("@endunless").size());
-            auto children = parse_nodes(inner, 0);
-            auto n = std::make_shared<Node>(); n->type = Node::UNLESS; n->expr = cond; n->children = std::move(children);
-            nodes.push_back(n);
-            pos = scan; continue;
-        }
-        if (s.compare(next, 9, "@foreach(") == 0) {
-            size_t open_par = next + 9;
-            size_t close_par = s.find(')', open_par);
-            if (close_par == std::string::npos) { pos = next + 9; continue; }
-            std::string inside = trim(s.substr(open_par, close_par - open_par));
-            // expected "items as item"
-            std::regex rx(R"(([a-zA-Z0-9._]+)\s+as\s+([a-zA-Z0-9._]+))");
-            std::smatch m;
-            std::string list_name, item_name;
-            if (std::regex_search(inside, m, rx)) { list_name = m[1].str(); item_name = m[2].str(); }
-            size_t inner_start = close_par + 1;
-            size_t scan = inner_start; int depth = 1;
-            while (scan < s.size() && depth > 0) {
-                size_t a = s.find("@foreach(", scan);
-                size_t b = s.find("@endforeach", scan);
-                if (b == std::string::npos) { scan = s.size(); break; }
-                if (a != std::string::npos && a < b) { depth++; scan = a + 9; } else { depth--; scan = b + 10; }
-            }
-            std::string inner = s.substr(inner_start, scan - inner_start - std::string("@endforeach").size());
-            auto children = parse_nodes(inner, 0);
-            auto n = std::make_shared<Node>(); n->type = Node::FOREACH; n->list_name = list_name; n->item_name = item_name; n->children = std::move(children);
-            nodes.push_back(n);
-            pos = scan; continue;
-        }
-        if (!end_tag.empty()) {
-            // check if end_tag starts at 'next'
-            if (s.compare(next, end_tag.size(), end_tag) == 0) {
-                // consume end_tag and return
-                pos = next + end_tag.size();
-                return nodes;
-            }
-        }
-        // if none matched, consume one char to avoid infinite loop
-        pos = next + 1;
+    auto root = std::make_shared<Node>(); root->type = Node::TEXT; root->children = parse_nodes(tpl, 0);
+    {
+        std::lock_guard<std::mutex> lock(content_cache_mutex);
+        content_cache.emplace(h, root);
     }
-    return nodes;
-}
-
-static std::shared_ptr<Node> compile_template(const std::string& tpl) {
-    // forward to content-based compilation/cache
-    return compile_template_from_content(tpl);
+    return root;
 }
 
 // --- rendering ---
@@ -597,6 +677,145 @@ std::string Blade::render_from_file(const std::filesystem::path& file_path, cons
     } catch (const std::exception& ex) {
         std::ostringstream oss; oss << "[Template Error: msg=" << ex.what() << "]"; return oss.str();
     }
+}
+
+// Adjust cache parameters and inline flag from application config at runtime (called when rendering from file)
+static void load_cache_config_from_app() {
+    try {
+        if (breeze::core::Application::has_instance()) {
+            auto& app = breeze::core::Application::instance();
+            CACHE_MAX_ITEMS = std::stoul(app.config().get("view.cache.max_items", std::to_string(CACHE_MAX_ITEMS)));
+            int ttl = std::stoi(app.config().get("view.cache.ttl_seconds", std::to_string(CACHE_TTL.count())));
+            CACHE_TTL = std::chrono::seconds(ttl);
+            // inline cpp opt-in flag
+            std::string inline_flag = app.config().get("view.inline_cpp.enabled", "false");
+            std::transform(inline_flag.begin(), inline_flag.end(), inline_flag.begin(), [](unsigned char c){ return std::tolower(c); });
+            INLINE_CPP_ENABLED = (inline_flag == "1" || inline_flag == "true" || inline_flag == "yes");
+        }
+    } catch (...) {
+        // ignore and keep defaults
+    }
+}
+
+// Ensure cache config is loaded before first render_from_file
+static struct CacheConfigLoader { CacheConfigLoader() { load_cache_config_from_app(); } } cache_config_loader_instance;
+
+// parse helpers: find next token position among {{, @if(, @unless(, @foreach(, @endif, @endunless, @endforeach
+static size_t find_next_special(const std::string& s, size_t start) {
+    std::vector<size_t> pos;
+    auto add = [&](const std::string& t){ size_t p = s.find(t, start); if (p != std::string::npos) pos.push_back(p); };
+    add("{{"); add("@if("); add("@unless("); add("@foreach("); add("@endif"); add("@endunless"); add("@endforeach");
+    if (pos.empty()) return std::string::npos;
+    return *std::min_element(pos.begin(), pos.end());
+}
+
+static std::vector<FilterSpec> parse_filters(const std::string& s) {
+    std::vector<FilterSpec> out;
+    std::istringstream ss(s);
+    std::string token;
+    while (std::getline(ss, token, '|')) {
+        token = trim(token);
+        if (token.empty()) continue;
+        size_t p = token.find('(');
+        if (p == std::string::npos) { out.push_back({token, ""}); continue; }
+        size_t q = token.rfind(')');
+        std::string name = trim(token.substr(0, p));
+        std::string arg = "";
+        if (q != std::string::npos && q > p) arg = trim(token.substr(p+1, q - (p+1)));
+        out.push_back({name, arg});
+    }
+    return out;
+}
+
+static std::vector<std::shared_ptr<Node>> parse_nodes(const std::string& s, size_t start, const std::string& end_tag) {
+    std::vector<std::shared_ptr<Node>> nodes;
+    size_t pos = start;
+    while (pos < s.size()) {
+        size_t next = find_next_special(s, pos);
+        if (next == std::string::npos) {
+            auto n = std::make_shared<Node>(); n->type = Node::TEXT; n->text = s.substr(pos); nodes.push_back(n); break;
+        }
+        if (next > pos) {
+            auto n = std::make_shared<Node>(); n->type = Node::TEXT; n->text = s.substr(pos, next - pos); nodes.push_back(n);
+        }
+        if (!end_tag.empty() && s.compare(next, end_tag.size(), end_tag) == 0) {
+            // consume end_tag and return
+            pos = next + end_tag.size();
+            return nodes;
+        }
+        if (s.compare(next, 2, "{{") == 0) {
+            size_t close = s.find("}}", next+2);
+            if (close == std::string::npos) { auto n = std::make_shared<Node>(); n->type = Node::TEXT; n->text = s.substr(next); nodes.push_back(n); break; }
+            std::string inside = trim(s.substr(next+2, close - (next+2)));
+            size_t p = inside.find('|');
+            std::string expr = inside; std::string filt_str;
+            if (p != std::string::npos) { expr = trim(inside.substr(0,p)); filt_str = inside.substr(p+1); }
+            auto n = std::make_shared<Node>(); n->type = Node::VAR; n->expr = expr; n->filters = parse_filters(filt_str); nodes.push_back(n);
+            pos = close + 2; continue;
+        }
+        if (s.compare(next, 4, "@if(") == 0) {
+            size_t open_par = next + 4;
+            size_t close_par = s.find(')', open_par);
+            if (close_par == std::string::npos) { pos = next + 4; continue; }
+            std::string cond = trim(s.substr(open_par, close_par - open_par));
+            size_t inner_start = close_par + 1;
+            auto children = parse_nodes(s, inner_start, "@endif");
+            auto n = std::make_shared<Node>(); n->type = Node::IF; n->expr = cond; n->children = std::move(children);
+            nodes.push_back(n);
+            // advance pos beyond matching @endif
+            size_t scan = inner_start; int depth = 1;
+            while (scan < s.size() && depth > 0) {
+                size_t a = s.find("@if(", scan);
+                size_t b = s.find("@endif", scan);
+                if (b == std::string::npos) { scan = s.size(); break; }
+                if (a != std::string::npos && a < b) { depth++; scan = a + 4; } else { depth--; scan = b + 6; }
+            }
+            pos = scan; continue;
+        }
+        if (s.compare(next, 8, "@unless(") == 0) {
+            size_t open_par = next + 8;
+            size_t close_par = s.find(')', open_par);
+            if (close_par == std::string::npos) { pos = next + 8; continue; }
+            std::string cond = trim(s.substr(open_par, close_par - open_par));
+            size_t inner_start = close_par + 1;
+            auto children = parse_nodes(s, inner_start, "@endunless");
+            auto n = std::make_shared<Node>(); n->type = Node::UNLESS; n->expr = cond; n->children = std::move(children);
+            nodes.push_back(n);
+            size_t scan = inner_start; int depth = 1;
+            while (scan < s.size() && depth > 0) {
+                size_t a = s.find("@unless(", scan);
+                size_t b = s.find("@endunless", scan);
+                if (b == std::string::npos) { scan = s.size(); break; }
+                if (a != std::string::npos && a < b) { depth++; scan = a + 8; } else { depth--; scan = b + 10; }
+            }
+            pos = scan; continue;
+        }
+        if (s.compare(next, 9, "@foreach(") == 0) {
+            size_t open_par = next + 9;
+            size_t close_par = s.find(')', open_par);
+            if (close_par == std::string::npos) { pos = next + 9; continue; }
+            std::string inside = trim(s.substr(open_par, close_par - open_par));
+            std::regex rx(R"(([a-zA-Z0-9._]+)\s+as\s+([a-zA-Z0-9._]+))");
+            std::smatch m;
+            std::string list_name, item_name;
+            if (std::regex_search(inside, m, rx)) { list_name = m[1].str(); item_name = m[2].str(); }
+            size_t inner_start = close_par + 1;
+            auto children = parse_nodes(s, inner_start, "@endforeach");
+            auto n = std::make_shared<Node>(); n->type = Node::FOREACH; n->list_name = list_name; n->item_name = item_name; n->children = std::move(children);
+            nodes.push_back(n);
+            size_t scan = inner_start; int depth = 1;
+            while (scan < s.size() && depth > 0) {
+                size_t a = s.find("@foreach(", scan);
+                size_t b = s.find("@endforeach", scan);
+                if (b == std::string::npos) { scan = s.size(); break; }
+                if (a != std::string::npos && a < b) { depth++; scan = a + 9; } else { depth--; scan = b + 10; }
+            }
+            pos = scan; continue;
+        }
+        // fallback to move one char to avoid infinite loop
+        pos = next + 1;
+    }
+    return nodes;
 }
 
 } // namespace breeze::support

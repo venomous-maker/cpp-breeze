@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cmath>
 #include <fstream>
+#include <openssl/sha.h>
 
 namespace breeze::support {
 
@@ -225,21 +226,25 @@ struct Node {
 static std::vector<std::shared_ptr<Node>> parse_nodes(const std::string& s, size_t start, const std::string& end_tag="");
 
 // We'll need a fast content hash for cache keys (FNV-1a)
-static std::uint64_t fnv1a_hash64(const std::string& s) {
-    const std::uint64_t fnv_offset = 14695981039346656037ull;
-    const std::uint64_t fnv_prime = 1099511628211ull;
-    std::uint64_t hash = fnv_offset;
-    for (unsigned char c : s) { hash ^= c; hash *= fnv_prime; }
-    return hash;
+static std::string sha1_hex(const std::string& s) {
+    unsigned char digest[SHA_DIGEST_LENGTH];
+    SHA1(reinterpret_cast<const unsigned char*>(s.data()), s.size(), digest);
+    static const char hex[] = "0123456789abcdef";
+    std::string out; out.reserve(SHA_DIGEST_LENGTH*2);
+    for (int i = 0; i < SHA_DIGEST_LENGTH; ++i) {
+        out.push_back(hex[(digest[i] >> 4) & 0xF]);
+        out.push_back(hex[digest[i] & 0xF]);
+    }
+    return out;
 }
 
-// New cache key: file path + content hash
+// New cache key uses SHA1 string instead of numeric FNV
 struct FileCacheKey {
     std::filesystem::path path;
-    std::uint64_t content_hash;
+    std::string content_hash; // hex sha1
 };
 static inline bool operator==(const FileCacheKey& a, const FileCacheKey& b) { return a.path == b.path && a.content_hash == b.content_hash; }
-struct FileCacheKeyHash { std::size_t operator()(FileCacheKey const& k) const noexcept { return std::hash<std::string>{}(k.path.string()) ^ (std::hash<std::uint64_t>{}(k.content_hash) << 1); } };
+struct FileCacheKeyHash { std::size_t operator()(FileCacheKey const& k) const noexcept { return std::hash<std::string>{}(k.path.string()) ^ (std::hash<std::string>{}(k.content_hash) << 1); } };
 
 // LRU cache structures (thread-safe)
 static std::mutex cache_mutex;
@@ -360,7 +365,7 @@ static std::shared_ptr<Node> cache_get_file(const FileCacheKey& key) {
 static void write_ast_to_disk(const FileCacheKey& key, const std::shared_ptr<Node>& ast) {
     try {
         auto dir = view_cache_dir();
-        std::string fname = std::to_string(key.content_hash) + ".json";
+        std::string fname = key.content_hash + ".json";
         std::filesystem::path p = dir / fname;
         nlohmann::json j = node_to_json(ast);
         std::ofstream ofs(p);
@@ -371,7 +376,7 @@ static void write_ast_to_disk(const FileCacheKey& key, const std::shared_ptr<Nod
 static std::shared_ptr<Node> read_ast_from_disk(const FileCacheKey& key) {
     try {
         auto dir = view_cache_dir();
-        std::string fname = std::to_string(key.content_hash) + ".json";
+        std::string fname = key.content_hash + ".json";
         std::filesystem::path p = dir / fname;
         if (!std::filesystem::exists(p)) return nullptr;
         std::ifstream ifs(p);
@@ -422,6 +427,19 @@ static bool contains_inline_cpp(const std::string& content, std::string& cpp_cod
     size_t end = content.find('}', start);
     if (end == std::string::npos) return false;
     cpp_code = content.substr(start, end - start);
+    return true;
+}
+
+// find inline cpp block and return code and position of end
+static bool extract_inline_cpp_block(const std::string& content, size_t& open_pos, size_t& close_pos, std::string& cpp_code) {
+    open_pos = content.find("@cpp{");
+    if (open_pos == std::string::npos) return false;
+    size_t start = open_pos + 5;
+    // find matching '}' - naive (first '}')
+    size_t end = content.find('}', start);
+    if (end == std::string::npos) return false;
+    cpp_code = content.substr(start, end - start);
+    close_pos = end;
     return true;
 }
 
@@ -498,24 +516,36 @@ static std::shared_ptr<Node> compile_template_from_file(const std::filesystem::p
         auto content_opt = read_file_to_string(path);
         if (!content_opt) return nullptr;
         auto content = *content_opt;
-        std::uint64_t chash = fnv1a_hash64(content);
+        std::string chash = sha1_hex(content);
         FileCacheKey key{path, chash};
         // check in-memory cache
         if (auto ast = cache_get_file(key); ast) return ast;
         // check on-disk cache
         if (auto disk_ast = read_ast_from_disk(key); disk_ast) {
-            cache_put_file(key, disk_ast);
-            return disk_ast;
+            // If the template contains an inline C++ block and inline compilation is enabled,
+            // do not return a cached raw-text AST that simply contains the source (it may be stale);
+            // instead continue to attempt inline compilation so the fallback interpreter can be used.
+            bool contains_cpp = (content.find("@cpp{") != std::string::npos);
+            bool disk_contains_cpp_marker = false;
+            if (disk_ast->type == Node::TEXT && disk_ast->text.find("@cpp{") != std::string::npos) disk_contains_cpp_marker = true;
+            if (INLINE_CPP_ENABLED && contains_cpp && disk_contains_cpp_marker) {
+                // skip using the disk cache so we can attempt compile/fallback
+            } else {
+                cache_put_file(key, disk_ast);
+                return disk_ast;
+            }
         }
         // detect inline cpp (only if enabled)
+        size_t open_pos=0, close_pos=0;
         std::string cpp_code;
-        if (INLINE_CPP_ENABLED && contains_inline_cpp(content, cpp_code)) {
-            // attempt compile and run; store output as a TEXT node that returns the compiled output
+        if (INLINE_CPP_ENABLED && extract_inline_cpp_block(content, open_pos, close_pos, cpp_code)) {
             if (auto out = compile_and_run_cpp(cpp_code); out) {
                 auto root = std::make_shared<Node>(); root->type = Node::TEXT; root->text = *out; cache_put_file(key, root); write_ast_to_disk(key, root); return root;
             } else {
-                // fallback to embedding full content; interpreter will run at render time
-                auto root = std::make_shared<Node>(); root->type = Node::TEXT; root->text = content; cache_put_file(key, root); write_ast_to_disk(key, root); return root;
+                // compilation failed: run tiny interpreter on the suffix after the closing '}' to produce fallback output
+                std::string suffix = content.substr(close_pos + 1);
+                std::string fallback = tiny_breeze_interpreter(suffix, nlohmann::json::object());
+                auto root = std::make_shared<Node>(); root->type = Node::TEXT; root->text = fallback; cache_put_file(key, root); write_ast_to_disk(key, root); return root;
             }
         }
         // parse and cache AST
@@ -687,14 +717,21 @@ static void load_cache_config_from_app() {
             CACHE_MAX_ITEMS = std::stoul(app.config().get("view.cache.max_items", std::to_string(CACHE_MAX_ITEMS)));
             int ttl = std::stoi(app.config().get("view.cache.ttl_seconds", std::to_string(CACHE_TTL.count())));
             CACHE_TTL = std::chrono::seconds(ttl);
-            // inline cpp opt-in flag
             std::string inline_flag = app.config().get("view.inline_cpp.enabled", "false");
             std::transform(inline_flag.begin(), inline_flag.end(), inline_flag.begin(), [](unsigned char c){ return std::tolower(c); });
             INLINE_CPP_ENABLED = (inline_flag == "1" || inline_flag == "true" || inline_flag == "yes");
         }
     } catch (...) {
-        // ignore and keep defaults
+        // ignore
     }
+    // env var override
+    const char* env = std::getenv("BREEZE_INLINE_CPP");
+    if (env) {
+        std::string e(env);
+        std::transform(e.begin(), e.end(), e.begin(), [](unsigned char c){ return std::tolower(c); });
+        INLINE_CPP_ENABLED = (e == "1" || e == "true" || e == "yes");
+    }
+    if (INLINE_CPP_ENABLED) std::cerr << "[Warning] Inline C++ compilation is ENABLED (BREEZE_INLINE_CPP or view.inline_cpp.enabled). Only enable for trusted templates." << std::endl;
 }
 
 // Ensure cache config is loaded before first render_from_file

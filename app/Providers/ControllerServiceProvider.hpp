@@ -17,6 +17,8 @@ public:
         router.register_controller_action<HomeController>("HomeController", "index", &HomeController::index);
         router.register_controller_action<HomeController>("HomeController", "about", &HomeController::about);
         router.register_controller_action<HomeController>("HomeController", "contact", &HomeController::contact);
+        router.register_controller_action<HomeController>("HomeController", "inlineBreeze", &HomeController::inlineBreeze);
+        router.register_controller_action<HomeController>("HomeController", "inlineCpp", &HomeController::inlineCpp);
 
         router.register_controller<UserController>("UserController");
         router.register_controller_action<UserController>("UserController", "index", &UserController::index);

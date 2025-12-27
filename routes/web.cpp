@@ -15,6 +15,10 @@ void register_web_routes(breeze::core::Application& app) {
         group.get("/", &HomeController::index);
         group.get("/about", &HomeController::about);
         group.get("/contact", &HomeController::contact);
+
+        // Expose example inline views
+        group.get("/inline/breeze", &HomeController::inlineBreeze);
+        group.get("/inline/cpp", &HomeController::inlineCpp);
     });
 
     // UserController routes using controller methods, similar to Laravel's Route::controller(UserController::class)

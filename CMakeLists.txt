@@ -60,6 +60,13 @@ FetchContent_MakeAvailable(nlohmann_json)
 # Link using the target name provided by the library
 target_link_libraries(breeze PUBLIC nlohmann_json::nlohmann_json)
 
+# Find OpenSSL to provide SHA1 implementation
+find_package(OpenSSL REQUIRED)
+if(OpenSSL_FOUND)
+  message(STATUS "Found OpenSSL: ${OpenSSL_VERSION}")
+  target_link_libraries(breeze PUBLIC OpenSSL::Crypto)
+endif()
+
 #install(EXPORT breezeTargets
 #   FILE breezeTargets.cmake
 #   NAMESPACE breeze::

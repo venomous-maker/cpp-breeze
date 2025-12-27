@@ -6,6 +6,7 @@
 // Forward declarations of route registration functions
 void register_web_routes(breeze::core::Application& app);
 void register_api_routes(breeze::core::Application& app);
+void register_admin_routes(breeze::core::Application& app);
 
 int main(int argc, char** argv) {
     auto app = breeze::core::Application::create();
@@ -18,6 +19,7 @@ int main(int argc, char** argv) {
     // Register routes from the routes directory
     register_web_routes(*app);
     register_api_routes(*app);
+    register_admin_routes(*app);
 
     // Default port from env or 8000
     int port = std::stoi(breeze::support::Env::get("APP_PORT", "8000"));

@@ -22,4 +22,16 @@ public:
     breeze::http::Response contact(const breeze::http::Request& req) {
         return breeze::http::Response::ok("Contact us at support@breeze-framework.com");
     }
+
+    breeze::http::Response inlineBreeze(const breeze::http::Request& req) {
+        return breeze::http::Response::view("inline_breeze_example", {
+            {"greeting", "Hello Breeze"},
+            {"count", 3},
+            {"items", {"one", "two", "three"}}
+        });
+    }
+
+    breeze::http::Response inlineCpp(const breeze::http::Request& req) {
+        return breeze::http::Response::view("inline_cpp_example", {});
+    }
 };

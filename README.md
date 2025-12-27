@@ -139,6 +139,40 @@ return Response::view("welcome", {
 });
 ```
 
+## Template examples
+
+Inline C++ example (opt-in, disabled by default):
+
+- `resources/views/inline_cpp_example.breeze` demonstrates using `@cpp{ ... }` to include C++ code. Inline compilation is disabled by default. To enable, set the config key `view.inline_cpp.enabled` to `true` or set environment variable `BREEZE_INLINE_CPP=true` (not recommended in production).
+
+Inline Breeze example:
+
+- `resources/views/inline_breeze_example.breeze` demonstrates breeze template features: expressions, filters (`upper`, `default`), `@if`, and `@foreach`.
+
+## Security and sandboxing
+
+Compiling and executing inline C++ code can be dangerous. The project includes an example sandbox helper script `scripts/sandbox_run.sh` which demonstrates how to run a compiled binary with resource limits (CPU time and virtual memory) using `ulimit` and `timeout`.
+
+This is a best-effort helper and is NOT a full sandbox. For production use, consider running compiled code inside containers, using seccomp profiles, or using specialized sandboxing tools.
+
+Example usage (local dev):
+
+```bash
+# Enable inline C++ (dev only)
+export BREEZE_INLINE_CPP=true
+# Start the app
+./breeze_app
+```
+
+## Admin routes
+
+Two admin endpoints were added to inspect and clear the Blade view cache:
+
+- GET /admin/blade/cache  — returns JSON with cache stats (hits, misses, entries, max_items, ttl_seconds).
+- POST /admin/blade/clear — clears both in-memory and on-disk compiled view caches.
+
+These routes should be protected in production; they are convenience endpoints for local development.
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.

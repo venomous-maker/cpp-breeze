@@ -535,6 +535,11 @@ public:
     // Dispatch request
     [[nodiscard]] Response dispatch(const Request& request) const {
         for (const auto& route : routes_) {
+            // Skip routes that don't match method/path
+            if (!route.matches(request.method(), request.path())) {
+                continue;
+            }
+
             // Extract path parameters
             auto params = route.extract_params(request.path());
             Request modified_request = request;

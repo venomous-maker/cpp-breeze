@@ -51,7 +51,7 @@ public:
             throw std::runtime_error("Failed to listen");
         }
 
-        std::cout << "Server listening on http://" << host << ":" << port << std::endl;
+        // server loop
 
         while (true) {
             sockaddr_in client_address{};

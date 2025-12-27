@@ -1,6 +1,5 @@
 #include <breeze/core/application.hpp>
 #include <filesystem>
-#include <iostream>
 
 namespace breeze::core {
 

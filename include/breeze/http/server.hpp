@@ -10,7 +10,6 @@
 #include <unistd.h>
 #include <cstring>
 #include <functional>
-#include <iostream>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -101,10 +100,18 @@ private:
             
             size_t query_pos = path.find('?');
             if (query_pos != std::string::npos) {
-                req.set_path(path.substr(0, query_pos));
+                std::string path_only = path.substr(0, query_pos);
+                if (path_only.size() > 1 && path_only.back() == '/') {
+                    path_only.pop_back();
+                }
+                req.set_path(path_only);
                 req.set_query_string(path.substr(query_pos + 1));
             } else {
-                req.set_path(path);
+                std::string path_only = path;
+                if (path_only.size() > 1 && path_only.back() == '/') {
+                    path_only.pop_back();
+                }
+                req.set_path(path_only);
             }
         }
 

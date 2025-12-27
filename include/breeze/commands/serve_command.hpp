@@ -1,7 +1,6 @@
 #pragma once
 #include <breeze/core/command.hpp>
 #include <breeze/core/application.hpp>
-#include <iostream>
 
 namespace breeze::commands {
 
@@ -22,12 +21,12 @@ public:
         int port = options.count("port") ? std::stoi(options.at("port")) : 8000;
 
         auto app = breeze::core::Application::create();
-        
+
         std::cout << "Starting Breeze development server: http://" << host << ":" << port << "\n";
-        
+
         // In a real implementation, we'd need to load routes from routes/ folder here
         // For now, let's assume Application handles it or we'll add it soon.
-        
+
         app->run(port);
         return 0;
     }

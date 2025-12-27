@@ -4,7 +4,6 @@
 
 void register_web_routes(breeze::core::Application& app) {
     auto& router = app.kernel().router();
-
     // Simple welcome route
     router.get("/", [](const breeze::http::Request&) {
         return breeze::http::Response::ok("Welcome to Breeze Web!");

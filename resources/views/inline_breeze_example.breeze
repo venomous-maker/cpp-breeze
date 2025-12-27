@@ -1,0 +1,8 @@
+{{ greeting | upper }}
+@if(count > 0)
+You have {{ count }} items, first: {{ items.0 | default('none') }}
+@endif
+@foreach(items as it)
+- {{ it }}
+@endforeach
+

@@ -1,0 +1,33 @@
+@cpp{
+// Inline C++ example for Breeze views
+#include <iostream>
+#include <vector>
+
+// simple computation
+int add(int a, int b) { return a + b; }
+
+int main(){
+    std::cout << "Inline C++ Example\n";
+    std::cout << "2 + 3 = " << add(2,3) << "\n";
+
+    // demonstrate a loop and output
+    std::vector<std::string> items = {"apple", "banana", "cherry"};
+    for (size_t i = 0; i < items.size(); ++i) {
+        std::cout << i << ": " << items[i] << "\n";
+    }
+
+    // show arithmetic and modulus
+    int a = 10, b = 3;
+    std::cout << "10 / 3 = " << (a / b) << " remainder " << (a % b) << "\n";
+
+    return 0;
+}
+
+// Fallback tiny Breeze interpreter friendly prints (if compile/run is disabled or fails)
+print("Inline C++ Example")
+print("Fallback: 2 + 3 = 5")
+print("0: apple")
+print("1: banana")
+print("2: cherry")
+}
+

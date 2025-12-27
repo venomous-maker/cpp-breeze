@@ -1,7 +1,6 @@
 #include <breeze/http/response.hpp>
 #include <breeze/core/application.hpp>
 #include <breeze/support/view.hpp>
-#include <iostream>
 
 namespace breeze::http {
 

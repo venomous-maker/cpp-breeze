@@ -118,7 +118,7 @@ std::string name = breeze::support::Env::get("APP_NAME");
 
 Breeze supports simple HTML templates with data binding. Place your templates in `resources/views`.
 
-**Template (`resources/views/welcome.html`):**
+**Template (`resources/views/welcome.breeze`):**
 ```html
 <h1>Hello, {{ name }}!</h1>
 @if(show_features)

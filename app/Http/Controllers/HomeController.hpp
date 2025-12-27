@@ -10,7 +10,7 @@ public:
             {"title", "Breeze Home"},
             {"message", "Hello from Breeze View Engine!"},
             {"show_user", true},
-            {"user", {{"name", "Junie"}}},
+            {"user", {{"name", "Breeze"}}},
             {"features", {"Fast", "Laravel-inspired", "C++20", "Service Container"}}
         });
     }

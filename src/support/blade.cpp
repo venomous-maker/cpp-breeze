@@ -4,60 +4,18 @@
 #include <sstream>
 #include <cctype>
 #include <algorithm>
+#include <unordered_map>
+#include <memory>
 
 namespace breeze::support {
 
+// --- helpers ---
 static std::vector<std::string> split_dot(const std::string& s) {
     std::vector<std::string> tokens;
     std::string token;
     std::istringstream tokenStream(s);
-    while (std::getline(tokenStream, token, '.')) {
-        tokens.push_back(token);
-    }
+    while (std::getline(tokenStream, token, '.')) tokens.push_back(token);
     return tokens;
-}
-
-static std::string resolve_data(const std::string& key, const nlohmann::json& data) {
-    auto parts = split_dot(key);
-    const nlohmann::json* current = &data;
-
-    for (const auto& part : parts) {
-        if (current->contains(part)) {
-            current = &((*current)[part]);
-        } else {
-            return "";
-        }
-    }
-
-    if (current->is_string()) return current->get<std::string>();
-    if (current->is_number()) return current->dump();
-    if (current->is_boolean()) return current->get<bool>() ? "true" : "false";
-    return "";
-}
-
-
-// Helper to return a pointer to a json value for a dotted identifier, or nullptr.
-static const nlohmann::json* get_json_ptr(const std::string& key, const nlohmann::json& data) {
-    auto parts = split_dot(key);
-    const nlohmann::json* current = &data;
-
-    for (const auto& part : parts) {
-        if (current->contains(part)) {
-            current = &((*current)[part]);
-        } else {
-            return nullptr;
-        }
-    }
-    return current;
-}
-
-static bool is_truthy_value(const nlohmann::json& current) {
-    if (current.is_boolean()) return current.get<bool>();
-    if (current.is_null()) return false;
-    if (current.is_string()) return !current.get<std::string>().empty();
-    if (current.is_number()) return current.get<double>() != 0;
-    if (current.is_array() || current.is_object()) return !current.empty();
-    return true;
 }
 
 static std::string trim(const std::string& s) {
@@ -68,8 +26,7 @@ static std::string trim(const std::string& s) {
 }
 
 static std::string html_escape(const std::string& s) {
-    std::string out;
-    out.reserve(s.size());
+    std::string out; out.reserve(s.size());
     for (char c : s) {
         switch (c) {
             case '&': out += "&amp;"; break;
@@ -93,14 +50,46 @@ static std::string to_lower(std::string s) {
     return s;
 }
 
-// Simple expression evaluator supporting identifiers, numeric/string/boolean literals,
-// comparison operators (==, !=, >, >=, <, <=), logical &&, ||, unary !, parentheses,
-// and arithmetic +, -, * (with normal precedence).
+// Resolve dotted json path, return nullptr if not found
+static const nlohmann::json* get_json_ptr(const std::string& key, const nlohmann::json& data) {
+    auto parts = split_dot(key);
+    const nlohmann::json* current = &data;
+    for (const auto& part : parts) {
+        if (current->contains(part)) current = &((*current)[part]); else return nullptr;
+    }
+    return current;
+}
+
+static std::string resolve_data_simple(const std::string& key, const nlohmann::json& data) {
+    if (auto p = get_json_ptr(key, data); p) {
+        if (p->is_string()) return p->get<std::string>();
+        if (p->is_number()) return p->dump();
+        if (p->is_boolean()) return p->get<bool>() ? "true" : "false";
+        return p->dump();
+    }
+    return std::string{};
+}
+
+static bool is_truthy_value(const nlohmann::json& current) {
+    if (current.is_boolean()) return current.get<bool>();
+    if (current.is_null()) return false;
+    if (current.is_string()) return !current.get<std::string>().empty();
+    if (current.is_number()) return current.get<double>() != 0;
+    if (current.is_array() || current.is_object()) return !current.empty();
+    return true;
+}
+
+// --- expression parsing with errors ---
+struct ExprError : public std::runtime_error {
+    std::string expr;
+    size_t pos;
+    ExprError(std::string m, std::string e, size_t p) : std::runtime_error(m), expr(std::move(e)), pos(p) {}
+};
+
 class ExprParser {
 public:
     ExprParser(const std::string& s, const nlohmann::json& ctx) : str_(s), pos_(0), ctx_(ctx) {}
 
-    // Evaluate expression and return a JSON value (number, string, boolean, or null)
     nlohmann::json eval() {
         skip_ws();
         auto v = parse_or();
@@ -108,8 +97,7 @@ public:
         return v;
     }
 
-    // Convenience boolean parse
-    bool parse_bool() {
+    bool eval_bool() {
         return is_truthy_value(eval());
     }
 
@@ -118,91 +106,48 @@ private:
     size_t pos_;
     const nlohmann::json& ctx_;
 
-    void skip_ws() {
-        while (pos_ < str_.size() && std::isspace(static_cast<unsigned char>(str_[pos_]))) ++pos_;
-    }
-
-    bool starts_with(const std::string& t) {
-        return str_.substr(pos_, t.size()) == t;
-    }
+    void skip_ws() { while (pos_ < str_.size() && std::isspace(static_cast<unsigned char>(str_[pos_]))) ++pos_; }
+    bool starts_with(const std::string& t) { return str_.substr(pos_, t.size()) == t; }
 
     nlohmann::json parse_or() {
-        auto left = parse_and();
-        skip_ws();
-        while (starts_with("||")) {
-            pos_ += 2; skip_ws();
-            auto right = parse_and();
-            bool l = is_truthy_value(left);
-            bool r = is_truthy_value(right);
-            left = (l || r);
-            skip_ws();
-        }
+        auto left = parse_and(); skip_ws();
+        while (starts_with("||")) { pos_ += 2; skip_ws(); auto right = parse_and(); left = (is_truthy_value(left) || is_truthy_value(right)); skip_ws(); }
         return left;
     }
 
     nlohmann::json parse_and() {
-        auto left = parse_comparison();
-        skip_ws();
-        while (starts_with("&&")) {
-            pos_ += 2; skip_ws();
-            auto right = parse_comparison();
-            bool l = is_truthy_value(left);
-            bool r = is_truthy_value(right);
-            left = (l && r);
-            skip_ws();
-        }
+        auto left = parse_comparison(); skip_ws();
+        while (starts_with("&&")) { pos_ += 2; skip_ws(); auto right = parse_comparison(); left = (is_truthy_value(left) && is_truthy_value(right)); skip_ws(); }
         return left;
     }
 
     nlohmann::json parse_comparison() {
-        auto left = parse_additive();
-        skip_ws();
-
-        const std::vector<std::string> ops = {"==","!=",">=","<=",">","<"};
+        auto left = parse_additive(); skip_ws();
+        const std::vector<std::string> ops = {"==","!=" , ">=","<=","<",">"};
         for (auto& op : ops) {
             if (starts_with(op)) {
-                pos_ += op.size(); skip_ws();
-                auto right = parse_additive();
-                return compare_values(left, op, right);
+                pos_ += op.size(); skip_ws(); auto right = parse_additive(); return compare_values(left, op, right);
             }
         }
         return left;
     }
 
     nlohmann::json parse_additive() {
-        auto left = parse_multiplicative();
-        skip_ws();
+        auto left = parse_multiplicative(); skip_ws();
         while (pos_ < str_.size()) {
-            if (starts_with("+")) {
-                ++pos_; skip_ws();
-                auto right = parse_multiplicative();
-                left = arithmetic_op(left, right, '+');
-                skip_ws();
-                continue;
-            }
-            if (starts_with("-")) {
-                ++pos_; skip_ws();
-                auto right = parse_multiplicative();
-                left = arithmetic_op(left, right, '-');
-                skip_ws();
-                continue;
-            }
+            if (starts_with("+")) { ++pos_; skip_ws(); auto right = parse_multiplicative(); left = arithmetic_op(left, right, '+'); skip_ws(); continue; }
+            if (starts_with("-")) { ++pos_; skip_ws(); auto right = parse_multiplicative(); left = arithmetic_op(left, right, '-'); skip_ws(); continue; }
             break;
         }
         return left;
     }
 
     nlohmann::json parse_multiplicative() {
-        auto left = parse_unary();
-        skip_ws();
+        auto left = parse_unary(); skip_ws();
         while (pos_ < str_.size()) {
-            if (starts_with("*")) {
-                ++pos_; skip_ws();
-                auto right = parse_unary();
-                left = arithmetic_op(left, right, '*');
-                skip_ws();
-                continue;
-            }
+            if (starts_with("*")) { ++pos_; skip_ws(); auto right = parse_unary(); left = arithmetic_op(left, right, '*'); skip_ws(); continue; }
+            if (starts_with("/")) { ++pos_; skip_ws(); auto right = parse_unary(); left = arithmetic_op(left, right, '/'); skip_ws(); continue; }
+            if (starts_with("%")) { ++pos_; skip_ws(); auto right = parse_unary(); left = arithmetic_op(left, right, '%'); skip_ws(); continue; }
             break;
         }
         return left;
@@ -210,236 +155,338 @@ private:
 
     nlohmann::json parse_unary() {
         skip_ws();
-        if (starts_with("!")) {
-            ++pos_; skip_ws();
-            auto v = parse_unary();
-            bool truth = is_truthy_value(v);
-            return !truth;
-        }
-        if (starts_with("-")) {
-            ++pos_; skip_ws();
-            auto v = parse_unary();
-            if (v.is_number()) return -v.get<double>();
-            return nullptr;
-        }
+        if (starts_with("!")) { ++pos_; skip_ws(); auto v = parse_unary(); return !is_truthy_value(v); }
+        if (starts_with("-")) { ++pos_; skip_ws(); auto v = parse_unary(); if (v.is_number()) return -v.get<double>(); throw ExprError("Unary - applied to non-number","",pos_); }
         return parse_primary();
     }
 
     nlohmann::json parse_primary() {
-        skip_ws();
-        if (pos_ >= str_.size()) return nullptr;
-        if (str_[pos_] == '(') {
-            ++pos_; skip_ws();
-            auto v = parse_or();
-            skip_ws(); if (pos_ < str_.size() && str_[pos_] == ')') ++pos_;
-            return v;
-        }
-
-        // string literal
+        skip_ws(); if (pos_ >= str_.size()) return nullptr;
+        if (str_[pos_] == '(') { ++pos_; skip_ws(); auto v = parse_or(); skip_ws(); if (pos_ < str_.size() && str_[pos_] == ')') ++pos_; else throw ExprError("Missing closing parenthesis", str_, pos_); return v; }
         if (str_[pos_] == '"' || str_[pos_] == '\'') {
-            char quote = str_[pos_++];
-            std::string out;
-            while (pos_ < str_.size() && str_[pos_] != quote) {
-                if (str_[pos_] == '\\' && pos_ + 1 < str_.size()) {
-                    out.push_back(str_[pos_ + 1]); pos_ += 2; continue;
-                }
-                out.push_back(str_[pos_++]);
-            }
-            if (pos_ < str_.size() && str_[pos_] == quote) ++pos_;
-            return out;
-        }
-
-        // identifier or literal (number, true, false, null)
+            char quote = str_[pos_++]; std::string out; while (pos_ < str_.size() && str_[pos_] != quote) { if (str_[pos_] == '\\' && pos_ + 1 < str_.size()) { out.push_back(str_[pos_ + 1]); pos_ += 2; continue; } out.push_back(str_[pos_++]); } if (pos_ < str_.size() && str_[pos_] == quote) ++pos_; return out; }
         if (std::isalpha(static_cast<unsigned char>(str_[pos_])) || str_[pos_] == '_') {
-            size_t start = pos_;
-            while (pos_ < str_.size() && (std::isalnum(static_cast<unsigned char>(str_[pos_])) || str_[pos_] == '_' || str_[pos_] == '.')) ++pos_;
+            size_t start = pos_; while (pos_ < str_.size() && (std::isalnum(static_cast<unsigned char>(str_[pos_])) || str_[pos_] == '_' || str_[pos_] == '.')) ++pos_;
             std::string tok = str_.substr(start, pos_ - start);
-            if (tok == "true") return true;
-            if (tok == "false") return false;
-            if (tok == "null") return nullptr;
-            // identifier: look up json value
-            if (auto p = get_json_ptr(tok, ctx_); p) return *p;
-            return nullptr;
+            if (tok == "true") return true; if (tok == "false") return false; if (tok == "null") return nullptr;
+            if (auto p = get_json_ptr(tok, ctx_); p) return *p; return nullptr;
         }
-
-        // number
         if (std::isdigit(static_cast<unsigned char>(str_[pos_])) || (str_[pos_] == '-' && pos_ + 1 < str_.size() && std::isdigit(static_cast<unsigned char>(str_[pos_ + 1])))) {
-            size_t start = pos_;
-            if (str_[pos_] == '-') ++pos_;
-            while (pos_ < str_.size() && std::isdigit(static_cast<unsigned char>(str_[pos_]))) ++pos_;
-            if (pos_ < str_.size() && str_[pos_] == '.') {
-                ++pos_;
-                while (pos_ < str_.size() && std::isdigit(static_cast<unsigned char>(str_[pos_]))) ++pos_;
-            }
-            std::string num = str_.substr(start, pos_ - start);
-            try { return std::stod(num); } catch (...) { return nullptr; }
+            size_t start = pos_; if (str_[pos_] == '-') ++pos_; while (pos_ < str_.size() && std::isdigit(static_cast<unsigned char>(str_[pos_])))) ++pos_; if (pos_ < str_.size() && str_[pos_] == '.') { ++pos_; while (pos_ < str_.size() && std::isdigit(static_cast<unsigned char>(str_[pos_]))) ++pos_; }
+            std::string num = str_.substr(start, pos_ - start); try { return std::stod(num); } catch (...) { throw ExprError("Invalid number literal", str_, start); }
         }
-
-        // nothing matched
-        return nullptr;
+        throw ExprError("Unexpected token in expression", str_, pos_);
     }
 
-    // Compare two json values according to operator
     nlohmann::json compare_values(const nlohmann::json& left, const std::string& op, const nlohmann::json& right) {
-        // If both numbers, compare numerically
         if (left.is_number() && right.is_number()) {
-            double a = left.get<double>();
-            double b = right.get<double>();
-            if (op == "==") return a == b;
-            if (op == "!=") return a != b;
-            if (op == ">") return a > b;
-            if (op == "<") return a < b;
-            if (op == ">=") return a >= b;
-            if (op == "<=") return a <= b;
+            double a = left.get<double>(); double b = right.get<double>();
+            if (op == "==") return a == b; if (op == "!=") return a != b; if (op == ">") return a > b; if (op == "<") return a < b; if (op == ">=") return a >= b; if (op == "<=") return a <= b;
         }
-
-        // If both booleans
         if (left.is_boolean() && right.is_boolean()) {
-            bool a = left.get<bool>();
-            bool b = right.get<bool>();
-            if (op == "==") return a == b;
-            if (op == "!=") return a != b;
-            // other ops not meaningful
-            return false;
+            bool a = left.get<bool>(); bool b = right.get<bool>(); if (op == "==") return a == b; if (op == "!=") return a != b; return false;
         }
-
-        // Fallback to string comparison
         std::string a = left.is_string() ? left.get<std::string>() : left.dump();
         std::string b = right.is_string() ? right.get<std::string>() : right.dump();
-
-        if (op == "==") return a == b;
-        if (op == "!=") return a != b;
-        if (op == ">") return a > b;
-        if (op == "<") return a < b;
-        if (op == ">=") return a >= b;
-        if (op == "<=") return a <= b;
-        return false;
+        if (op == "==") return a == b; if (op == "!=") return a != b; if (op == ">") return a > b; if (op == "<") return a < b; if (op == ">=") return a >= b; if (op == "<=") return a <= b; return false;
     }
 
-    // Perform arithmetic operation where possible
     nlohmann::json arithmetic_op(const nlohmann::json& left, const nlohmann::json& right, char op) {
         if (left.is_number() && right.is_number()) {
-            double a = left.get<double>();
-            double b = right.get<double>();
-            if (op == '+') return a + b;
-            if (op == '-') return a - b;
-            if (op == '*') return a * b;
+            double a = left.get<double>(); double b = right.get<double>();
+            if (op == '+') return a + b; if (op == '-') return a - b; if (op == '*') return a * b; if (op == '/') { if (b == 0) throw ExprError("Division by zero", str_, pos_); return a / b; } if (op == '%') { if (b == 0) throw ExprError("Division by zero for modulus", str_, pos_); return std::fmod(a, b); }
         }
-        // For +, allow string concatenation
-        if (op == '+') {
-            std::string a = left.is_string() ? left.get<std::string>() : left.dump();
-            std::string b = right.is_string() ? right.get<std::string>() : right.dump();
-            return a + b;
-        }
-        return nullptr;
+        if (op == '+') { std::string a = left.is_string() ? left.get<std::string>() : left.dump(); std::string b = right.is_string() ? right.get<std::string>() : right.dump(); return a + b; }
+        throw ExprError("Arithmetic operation on non-numeric operands", str_, pos_);
     }
 };
 
-std::string Blade::render(std::string_view tpl, const nlohmann::json& context) const
-{
-    std::string result{tpl};
-    std::smatch match;
+// --- Template AST and compilation caching ---
+struct FilterSpec { std::string name; std::string arg; };
+struct Node {
+    enum Type { TEXT, VAR, IF, UNLESS, FOREACH } type;
+    std::string text; // for TEXT
+    std::string expr; // for VAR or IF condition
+    std::vector<FilterSpec> filters; // for VAR
+    std::vector<std::shared_ptr<Node>> children; // for blocks
+    // foreach specifics
+    std::string list_name;
+    std::string item_name;
+};
 
-    // 1. @foreach(items as item) ... @endforeach
-    std::regex foreach_regex(R"(@foreach\(\s*([a-zA-Z0-9._]+)\s+as\s+([a-zA-Z0-9._]+)\s*\)([\s\S]*?)@endforeach)");
-    while (std::regex_search(result, match, foreach_regex)) {
-        std::string key = match[1].str();
-        std::string var_name = match[2].str();
-        std::string inner_content = match[3].str();
+static std::unordered_map<size_t, std::shared_ptr<Node>> template_cache;
 
-        std::string repeated_content;
-        if (context.contains(key) && context[key].is_array()) {
-            for (const auto& item : context[key]) {
-                nlohmann::json loop_data = context;
-                loop_data[var_name] = item;
-                repeated_content += render(inner_content, loop_data);
+// forward
+static std::shared_ptr<Node> compile_template(const std::string& tpl);
+
+// parse helpers: find next token position among {{, @if(, @unless(, @foreach(, @endif, @endunless, @endforeach
+static size_t find_next_special(const std::string& s, size_t start) {
+    std::vector<size_t> pos;
+    auto add = [&](const std::string& t){ size_t p = s.find(t, start); if (p != std::string::npos) pos.push_back(p); };
+    add("{{"); add("@if("); add("@unless("); add("@foreach("); add("@endif"); add("@endunless"); add("@endforeach");
+    if (pos.empty()) return std::string::npos;
+    return *std::min_element(pos.begin(), pos.end());
+}
+
+static std::string extract_between(const std::string& s, size_t start, const std::string& open, const std::string& close) {
+    size_t p = s.find(open, start);
+    if (p == std::string::npos) return {};
+    size_t q = s.find(close, p + open.size());
+    if (q == std::string::npos) return {};
+    return s.substr(p + open.size(), q - (p + open.size()));
+}
+
+static std::vector<FilterSpec> parse_filters(const std::string& s) {
+    std::vector<FilterSpec> out;
+    std::istringstream ss(s);
+    std::string token;
+    while (std::getline(ss, token, '|')) {
+        token = trim(token);
+        if (token.empty()) continue;
+        // parse name(args?)
+        size_t p = token.find('(');
+        if (p == std::string::npos) { out.push_back({token, ""}); continue; }
+        size_t q = token.rfind(')');
+        std::string name = trim(token.substr(0, p));
+        std::string arg = "";
+        if (q != std::string::npos && q > p) arg = trim(token.substr(p+1, q - (p+1)));
+        out.push_back({name, arg});
+    }
+    return out;
+}
+
+static std::vector<std::shared_ptr<Node>> parse_nodes(const std::string& s, size_t start, const std::string& end_tag="") {
+    std::vector<std::shared_ptr<Node>> nodes;
+    size_t pos = start;
+    while (pos < s.size()) {
+        size_t next = find_next_special(s, pos);
+        if (next == std::string::npos) {
+            // remaining text
+            auto n = std::make_shared<Node>(); n->type = Node::TEXT; n->text = s.substr(pos); nodes.push_back(n); break;
+        }
+        if (next > pos) {
+            auto n = std::make_shared<Node>(); n->type = Node::TEXT; n->text = s.substr(pos, next - pos); nodes.push_back(n);
+        }
+        // check what token starts at next
+        if (s.compare(next, 2, "{{") == 0) {
+            size_t close = s.find("}}", next+2);
+            if (close == std::string::npos) {
+                auto n = std::make_shared<Node>(); n->type = Node::TEXT; n->text = s.substr(next); nodes.push_back(n); break;
+            }
+            std::string inside = trim(s.substr(next+2, close - (next+2)));
+            // split filters by first '|'
+            size_t p = inside.find('|');
+            std::string expr = inside;
+            std::string filt_str;
+            if (p != std::string::npos) { expr = trim(inside.substr(0,p)); filt_str = inside.substr(p+1); }
+            auto n = std::make_shared<Node>(); n->type = Node::VAR; n->expr = expr; n->filters = parse_filters(filt_str); nodes.push_back(n);
+            pos = close + 2; continue;
+        }
+        if (s.compare(next, 4, "@if(") == 0) {
+            size_t open_par = next + 4;
+            size_t close_par = s.find(')', open_par);
+            if (close_par == std::string::npos) { pos = next + 4; continue; }
+            std::string cond = trim(s.substr(open_par, close_par - open_par));
+            // parse inner until matching @endif, respecting nested @if
+            size_t inner_start = close_par + 1;
+            std::string inner_end_tag = "@endif";
+            auto children = parse_nodes(s, inner_start, inner_end_tag);
+            auto n = std::make_shared<Node>(); n->type = Node::IF; n->expr = cond; n->children = std::move(children);
+            nodes.push_back(n);
+            // move pos to after the consumed end tag - parse_nodes will return positioned after end tag via finding it
+            // We need to find corresponding end tag position. We'll search for the matching end here.
+            size_t scan = inner_start; int depth = 1;
+            while (scan < s.size() && depth > 0) {
+                size_t a = s.find("@if(", scan);
+                size_t b = s.find("@endif", scan);
+                if (b == std::string::npos) { scan = s.size(); break; }
+                if (a != std::string::npos && a < b) { depth++; scan = a + 4; } else { depth--; scan = b + 6; }
+            }
+            pos = scan; continue;
+        }
+        if (s.compare(next, 8, "@unless(") == 0) {
+            size_t open_par = next + 8;
+            size_t close_par = s.find(')', open_par);
+            if (close_par == std::string::npos) { pos = next + 8; continue; }
+            std::string cond = trim(s.substr(open_par, close_par - open_par));
+            size_t inner_start = close_par + 1;
+            size_t scan = inner_start; int depth = 1;
+            while (scan < s.size() && depth > 0) {
+                size_t a = s.find("@unless(", scan);
+                size_t b = s.find("@endunless", scan);
+                if (b == std::string::npos) { scan = s.size(); break; }
+                if (a != std::string::npos && a < b) { depth++; scan = a + 8; } else { depth--; scan = b + 10; }
+            }
+            std::string inner = s.substr(inner_start, scan - inner_start - std::string("@endunless").size());
+            auto children = parse_nodes(inner, 0);
+            auto n = std::make_shared<Node>(); n->type = Node::UNLESS; n->expr = cond; n->children = std::move(children);
+            nodes.push_back(n);
+            pos = scan; continue;
+        }
+        if (s.compare(next, 9, "@foreach(") == 0) {
+            size_t open_par = next + 9;
+            size_t close_par = s.find(')', open_par);
+            if (close_par == std::string::npos) { pos = next + 9; continue; }
+            std::string inside = trim(s.substr(open_par, close_par - open_par));
+            // expected "items as item"
+            std::regex rx(R"(([a-zA-Z0-9._]+)\s+as\s+([a-zA-Z0-9._]+))");
+            std::smatch m;
+            std::string list_name, item_name;
+            if (std::regex_search(inside, m, rx)) { list_name = m[1].str(); item_name = m[2].str(); }
+            size_t inner_start = close_par + 1;
+            size_t scan = inner_start; int depth = 1;
+            while (scan < s.size() && depth > 0) {
+                size_t a = s.find("@foreach(", scan);
+                size_t b = s.find("@endforeach", scan);
+                if (b == std::string::npos) { scan = s.size(); break; }
+                if (a != std::string::npos && a < b) { depth++; scan = a + 9; } else { depth--; scan = b + 10; }
+            }
+            std::string inner = s.substr(inner_start, scan - inner_start - std::string("@endforeach").size());
+            auto children = parse_nodes(inner, 0);
+            auto n = std::make_shared<Node>(); n->type = Node::FOREACH; n->list_name = list_name; n->item_name = item_name; n->children = std::move(children);
+            nodes.push_back(n);
+            pos = scan; continue;
+        }
+        if (!end_tag.empty()) {
+            // check if end_tag starts at 'next'
+            if (s.compare(next, end_tag.size(), end_tag) == 0) {
+                // consume end_tag and return
+                pos = next + end_tag.size();
+                return nodes;
             }
         }
-
-        result.replace(match.position(), match.length(), repeated_content);
+        // if none matched, consume one char to avoid infinite loop
+        pos = next + 1;
     }
+    return nodes;
+}
 
-    // 2. @if(condition) ... @endif
-    std::regex if_regex(R"(@if\(\s*([\s\S]*?)\s*\)([\s\S]*?)@endif)");
-    while (std::regex_search(result, match, if_regex)) {
-        std::string expr = match[1].str();
-        std::string inner_content = match[2].str();
-        bool condition = false;
-        try {
-            ExprParser p(expr, context);
-            condition = p.parse_bool();
-        } catch (...) {
-            condition = false;
+static std::shared_ptr<Node> compile_template(const std::string& tpl) {
+    size_t key = std::hash<std::string>{}(tpl);
+    if (auto it = template_cache.find(key); it != template_cache.end()) return it->second;
+    auto root = std::make_shared<Node>(); root->type = Node::TEXT; // root container, children used
+    root->children = parse_nodes(tpl, 0);
+    template_cache.emplace(key, root);
+    return root;
+}
+
+// --- rendering ---
+static std::string apply_filters(const std::string& input, const std::vector<FilterSpec>& filters, const nlohmann::json& ctx) {
+    std::string out = input;
+    for (const auto& f : filters) {
+        if (f.name == "escape") out = html_escape(out);
+        else if (f.name == "upper") out = to_upper(out);
+        else if (f.name == "lower") out = to_lower(out);
+        else if (f.name == "trim") out = trim(out);
+        else if (f.name == "truncate") {
+            // arg is length or expression
+            int len = 0;
+            if (!f.arg.empty()) {
+                try { ExprParser p(f.arg, ctx); auto v = p.eval(); if (v.is_number()) len = static_cast<int>(v.get<double>()); else len = std::stoi(f.arg); } catch (...) { len = 0; }
+            }
+            if (len > 0 && (int)out.size() > len) out = out.substr(0, len);
         }
-
-        result.replace(match.position(), match.length(), condition ? inner_content : "");
-    }
-
-    // 3. @unless(condition) ... @endunless
-    std::regex unless_regex(R"(@unless\(\s*([\s\S]*?)\s*\)([\s\S]*?)@endunless)");
-    while (std::regex_search(result, match, unless_regex)) {
-        std::string expr = match[1].str();
-        std::string inner_content = match[2].str();
-        bool condition = false;
-        try {
-            ExprParser p(expr, context);
-            condition = p.parse_bool();
-        } catch (...) {
-            condition = false;
-        }
-
-        result.replace(match.position(), match.length(), !condition ? inner_content : "");
-    }
-
-    // 4. {{ expr [| filter ...] }}
-    std::regex var_regex(R"(\{\{\s*([\s\S]*?)\s*\}\})");
-    while (std::regex_search(result, match, var_regex)) {
-        std::string inside = match[1].str();
-        // split on '|' for filters
-        size_t pipe = inside.find('|');
-        std::string expr_str = inside;
-        std::vector<std::string> filters;
-        if (pipe != std::string::npos) {
-            expr_str = inside.substr(0, pipe);
-            std::string rest = inside.substr(pipe + 1);
-            // parse multiple filters separated by '|'
-            std::istringstream fs(rest);
-            std::string f;
-            while (std::getline(fs, f, '|')) {
-                filters.push_back(trim(f));
+        else if (f.name == "default") {
+            // arg is expression or literal
+            if (out.empty()) {
+                if (!f.arg.empty()) {
+                    try { ExprParser p(f.arg, ctx); auto v = p.eval(); if (v.is_string()) out = v.get<std::string>(); else if (v.is_number()) out = v.dump(); else if (v.is_boolean()) out = v.get<bool>() ? "true" : "false"; else out = ""; }
+                    catch (...) { out = f.arg; }
+                }
             }
         }
-        expr_str = trim(expr_str);
-
-        std::string out;
-        try {
-            ExprParser p(expr_str, context);
-            nlohmann::json val = p.eval();
-            // convert to string
-            if (val.is_string()) out = val.get<std::string>();
-            else if (val.is_number()) out = val.dump();
-            else if (val.is_boolean()) out = val.get<bool>() ? "true" : "false";
-            else if (val.is_null()) out = "";
-            else out = val.dump();
-        } catch (...) {
-            // fallback: try to resolve as simple key
-            out = resolve_data(expr_str, context);
-        }
-
-        // apply filters in order
-        for (const auto& fl : filters) {
-            if (fl == "escape") out = html_escape(out);
-            else if (fl == "upper") out = to_upper(out);
-            else if (fl == "lower") out = to_lower(out);
-            else {
-                // unknown filters: ignore or could leave as-is
+        else if (f.name == "format") {
+            // simple replacement: replace first '{}' with out, or use {0}
+            std::string fmt = f.arg;
+            if (fmt.empty()) continue;
+            size_t p = fmt.find("{}");
+            if (p != std::string::npos) {
+                std::string res = fmt.substr(0,p) + out + fmt.substr(p+2);
+                out = res;
+            } else {
+                // replace {0}
+                size_t q = fmt.find("{0}");
+                if (q != std::string::npos) {
+                    std::string res = fmt.substr(0,q) + out + fmt.substr(q+3);
+                    out = res;
+                }
             }
         }
-
-        result.replace(match.position(), match.length(), out);
+        else {
+            // unknown filter: ignore
+        }
     }
+    return out;
+}
 
-    return result;
+static std::string render_nodes(const std::vector<std::shared_ptr<Node>>& nodes, const nlohmann::json& ctx);
+
+static std::string render_node(const std::shared_ptr<Node>& node, const nlohmann::json& ctx) {
+    try {
+        switch (node->type) {
+            case Node::TEXT: return node->text;
+            case Node::VAR: {
+                ExprParser p(node->expr, ctx);
+                nlohmann::json v = p.eval();
+                std::string out;
+                if (v.is_string()) out = v.get<std::string>();
+                else if (v.is_number()) out = v.dump();
+                else if (v.is_boolean()) out = v.get<bool>() ? "true" : "false";
+                else if (v.is_null()) out = ""; else out = v.dump();
+                out = apply_filters(out, node->filters, ctx);
+                return out;
+            }
+            case Node::IF: {
+                ExprParser p(node->expr, ctx);
+                bool cond = p.eval_bool();
+                if (cond) return render_nodes(node->children, ctx);
+                return std::string{};
+            }
+            case Node::UNLESS: {
+                ExprParser p(node->expr, ctx);
+                bool cond = p.eval_bool();
+                if (!cond) return render_nodes(node->children, ctx);
+                return std::string{};
+            }
+            case Node::FOREACH: {
+                // lookup list
+                if (auto p = get_json_ptr(node->list_name, ctx); p && p->is_array()) {
+                    std::string out;
+                    for (const auto& item : *p) {
+                        nlohmann::json local = ctx;
+                        local[node->item_name] = item;
+                        out += render_nodes(node->children, local);
+                    }
+                    return out;
+                }
+                return std::string{};
+            }
+        }
+    } catch (const ExprError& e) {
+        std::ostringstream oss; oss << "[Template Error: expr=\"" << e.expr << "\" pos=" << e.pos << " msg=" << e.what() << "]"; return oss.str();
+    } catch (const std::exception& ex) {
+        std::ostringstream oss; oss << "[Template Error: msg=" << ex.what() << "]"; return oss.str();
+    }
+    return std::string{};
+}
+
+static std::string render_nodes(const std::vector<std::shared_ptr<Node>>& nodes, const nlohmann::json& ctx) {
+    std::string out;
+    for (const auto& n : nodes) out += render_node(n, ctx);
+    return out;
+}
+
+std::string Blade::render(std::string_view tpl, const nlohmann::json& context) const {
+    std::string content{tpl};
+    auto root = compile_template(content);
+    // root->children holds top-level nodes
+    try {
+        return render_nodes(root->children, context);
+    } catch (const ExprError& e) {
+        std::ostringstream oss; oss << "[Template Error: expr=\"" << e.expr << "\" pos=" << e.pos << " msg=" << e.what() << "]"; return oss.str();
+    } catch (const std::exception& ex) {
+        std::ostringstream oss; oss << "[Template Error: msg=" << ex.what() << "]"; return oss.str();
+    }
 }
 
 } // namespace breeze::support

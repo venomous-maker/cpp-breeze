@@ -3,7 +3,7 @@
 void register_api_routes(breeze::core::Application& app) {
     auto& router = app.kernel().router();
 
-    router.group("/api").group([&app](auto& group) {
+    router.group({.prefix = "/api"}, [&app](auto& group) {
         group.get("/user", [](const breeze::http::Request&) {
             return breeze::http::Response::json({{"name", "John Doe"}});
         });

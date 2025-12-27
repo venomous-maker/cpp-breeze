@@ -22,11 +22,7 @@ public:
 
         auto app = breeze::core::Application::create();
 
-        std::cout << "Starting Breeze development server: http://" << host << ":" << port << "\n";
-
-        // In a real implementation, we'd need to load routes from routes/ folder here
-        // For now, let's assume Application handles it or we'll add it soon.
-
+        // Start server
         app->run(port);
         return 0;
     }

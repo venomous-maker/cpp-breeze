@@ -3,6 +3,7 @@
 #include <regex>
 #include <sstream>
 #include <cctype>
+#include <algorithm>
 
 namespace breeze::support {
 
@@ -59,17 +60,57 @@ static bool is_truthy_value(const nlohmann::json& current) {
     return true;
 }
 
+static std::string trim(const std::string& s) {
+    size_t a = 0, b = s.size();
+    while (a < b && std::isspace(static_cast<unsigned char>(s[a]))) ++a;
+    while (b > a && std::isspace(static_cast<unsigned char>(s[b-1]))) --b;
+    return s.substr(a, b - a);
+}
+
+static std::string html_escape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        switch (c) {
+            case '&': out += "&amp;"; break;
+            case '<': out += "&lt;"; break;
+            case '>': out += "&gt;"; break;
+            case '"': out += "&quot;"; break;
+            case '\'': out += "&#39;"; break;
+            default: out.push_back(c); break;
+        }
+    }
+    return out;
+}
+
+static std::string to_upper(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c){ return static_cast<char>(std::toupper(c)); });
+    return s;
+}
+
+static std::string to_lower(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+    return s;
+}
+
 // Simple expression evaluator supporting identifiers, numeric/string/boolean literals,
-// comparison operators (==, !=, >, >=, <, <=), and logical &&, ||, unary !, and parentheses.
+// comparison operators (==, !=, >, >=, <, <=), logical &&, ||, unary !, parentheses,
+// and arithmetic +, -, * (with normal precedence).
 class ExprParser {
 public:
     ExprParser(const std::string& s, const nlohmann::json& ctx) : str_(s), pos_(0), ctx_(ctx) {}
 
-    bool parse() {
+    // Evaluate expression and return a JSON value (number, string, boolean, or null)
+    nlohmann::json eval() {
         skip_ws();
         auto v = parse_or();
         skip_ws();
-        return is_truthy_value(v);
+        return v;
+    }
+
+    // Convenience boolean parse
+    bool parse_bool() {
+        return is_truthy_value(eval());
     }
 
 private:
@@ -114,17 +155,55 @@ private:
     }
 
     nlohmann::json parse_comparison() {
-        auto left = parse_unary();
+        auto left = parse_additive();
         skip_ws();
 
-        // comparison operators
         const std::vector<std::string> ops = {"==","!=",">=","<=",">","<"};
         for (auto& op : ops) {
             if (starts_with(op)) {
                 pos_ += op.size(); skip_ws();
-                auto right = parse_unary();
+                auto right = parse_additive();
                 return compare_values(left, op, right);
             }
+        }
+        return left;
+    }
+
+    nlohmann::json parse_additive() {
+        auto left = parse_multiplicative();
+        skip_ws();
+        while (pos_ < str_.size()) {
+            if (starts_with("+")) {
+                ++pos_; skip_ws();
+                auto right = parse_multiplicative();
+                left = arithmetic_op(left, right, '+');
+                skip_ws();
+                continue;
+            }
+            if (starts_with("-")) {
+                ++pos_; skip_ws();
+                auto right = parse_multiplicative();
+                left = arithmetic_op(left, right, '-');
+                skip_ws();
+                continue;
+            }
+            break;
+        }
+        return left;
+    }
+
+    nlohmann::json parse_multiplicative() {
+        auto left = parse_unary();
+        skip_ws();
+        while (pos_ < str_.size()) {
+            if (starts_with("*")) {
+                ++pos_; skip_ws();
+                auto right = parse_unary();
+                left = arithmetic_op(left, right, '*');
+                skip_ws();
+                continue;
+            }
+            break;
         }
         return left;
     }
@@ -136,6 +215,12 @@ private:
             auto v = parse_unary();
             bool truth = is_truthy_value(v);
             return !truth;
+        }
+        if (starts_with("-")) {
+            ++pos_; skip_ws();
+            auto v = parse_unary();
+            if (v.is_number()) return -v.get<double>();
+            return nullptr;
         }
         return parse_primary();
     }
@@ -230,6 +315,24 @@ private:
         if (op == "<=") return a <= b;
         return false;
     }
+
+    // Perform arithmetic operation where possible
+    nlohmann::json arithmetic_op(const nlohmann::json& left, const nlohmann::json& right, char op) {
+        if (left.is_number() && right.is_number()) {
+            double a = left.get<double>();
+            double b = right.get<double>();
+            if (op == '+') return a + b;
+            if (op == '-') return a - b;
+            if (op == '*') return a * b;
+        }
+        // For +, allow string concatenation
+        if (op == '+') {
+            std::string a = left.is_string() ? left.get<std::string>() : left.dump();
+            std::string b = right.is_string() ? right.get<std::string>() : right.dump();
+            return a + b;
+        }
+        return nullptr;
+    }
 };
 
 std::string Blade::render(std::string_view tpl, const nlohmann::json& context) const
@@ -264,7 +367,7 @@ std::string Blade::render(std::string_view tpl, const nlohmann::json& context) c
         bool condition = false;
         try {
             ExprParser p(expr, context);
-            condition = p.parse();
+            condition = p.parse_bool();
         } catch (...) {
             condition = false;
         }
@@ -280,7 +383,7 @@ std::string Blade::render(std::string_view tpl, const nlohmann::json& context) c
         bool condition = false;
         try {
             ExprParser p(expr, context);
-            condition = p.parse();
+            condition = p.parse_bool();
         } catch (...) {
             condition = false;
         }
@@ -288,12 +391,52 @@ std::string Blade::render(std::string_view tpl, const nlohmann::json& context) c
         result.replace(match.position(), match.length(), !condition ? inner_content : "");
     }
 
-    // 4. {{ var }}
-    std::regex var_regex(R"(\{\{\s*([a-zA-Z0-9._]+)\s*\}\})");
+    // 4. {{ expr [| filter ...] }}
+    std::regex var_regex(R"(\{\{\s*([\s\S]*?)\s*\}\})");
     while (std::regex_search(result, match, var_regex)) {
-        std::string key = match[1].str();
-        std::string value = resolve_data(key, context);
-        result.replace(match.position(), match.length(), value);
+        std::string inside = match[1].str();
+        // split on '|' for filters
+        size_t pipe = inside.find('|');
+        std::string expr_str = inside;
+        std::vector<std::string> filters;
+        if (pipe != std::string::npos) {
+            expr_str = inside.substr(0, pipe);
+            std::string rest = inside.substr(pipe + 1);
+            // parse multiple filters separated by '|'
+            std::istringstream fs(rest);
+            std::string f;
+            while (std::getline(fs, f, '|')) {
+                filters.push_back(trim(f));
+            }
+        }
+        expr_str = trim(expr_str);
+
+        std::string out;
+        try {
+            ExprParser p(expr_str, context);
+            nlohmann::json val = p.eval();
+            // convert to string
+            if (val.is_string()) out = val.get<std::string>();
+            else if (val.is_number()) out = val.dump();
+            else if (val.is_boolean()) out = val.get<bool>() ? "true" : "false";
+            else if (val.is_null()) out = "";
+            else out = val.dump();
+        } catch (...) {
+            // fallback: try to resolve as simple key
+            out = resolve_data(expr_str, context);
+        }
+
+        // apply filters in order
+        for (const auto& fl : filters) {
+            if (fl == "escape") out = html_escape(out);
+            else if (fl == "upper") out = to_upper(out);
+            else if (fl == "lower") out = to_lower(out);
+            else {
+                // unknown filters: ignore or could leave as-is
+            }
+        }
+
+        result.replace(match.position(), match.length(), out);
     }
 
     return result;

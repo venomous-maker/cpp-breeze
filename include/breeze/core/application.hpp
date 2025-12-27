@@ -95,6 +95,9 @@ public:
         for (auto& provider : service_providers_) {
             provider->boot();
         }
+
+        // Ensure kernel can propagate middleware aliases/groups into the router
+        kernel_.boot();
     }
     
     // Singleton instance access

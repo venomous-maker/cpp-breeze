@@ -10,6 +10,7 @@
 #include <memory>
 #include <functional>
 #include <vector>
+#include <iostream>
 
 namespace breeze::core {
 
@@ -66,12 +67,20 @@ public:
         // Finalize routing
         finalize_routing();
 
+        std::string host = "0.0.0.0";
+        // Print environment-aware startup message
+        if (is_production()) {
+            std::cout << "Production server started on http://" << host << ":" << port << std::endl;
+        } else {
+            std::cout << "Development server started on http://" << host << ":" << port << std::endl;
+        }
+
         breeze::http::Server server([this](const breeze::http::Request& req) {
             // Use this Application instance to handle the request (not a separate singleton)
             return this->handle(req);
         });
         
-        server.listen("0.0.0.0", port);
+        server.listen(host, port);
     }
     
     // Laravel-style service provider registration

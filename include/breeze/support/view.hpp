@@ -5,14 +5,15 @@
 #include <nlohmann/json.hpp>
 #include <filesystem>
 #include <vector>
+#include <breeze/support/view_engine.hpp>
 
 namespace breeze::support {
 
-class View {
+class View : public IViewEngine {
 public:
     View(const std::filesystem::path& views_path);
 
-    std::string render(const std::string& template_name, const nlohmann::json& data = {});
+    std::string render(const std::string& template_name, const nlohmann::json& data = {}) override;
 
 private:
     std::string parse(std::string content, const nlohmann::json& data);

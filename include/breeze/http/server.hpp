@@ -61,14 +61,16 @@ public:
                 continue;
             }
 
-            std::thread([this, client_fd]() {
-                handle_client(client_fd);
+            // Capture client_address by value and pass it to the handler thread
+            std::thread([this, client_fd, client_address]() mutable {
+                handle_client(client_fd, client_address);
             }).detach();
         }
     }
 
 private:
-    void handle_client(int client_fd) {
+    // Updated to accept client address so we can inject remote IP into the Request headers
+    void handle_client(int client_fd, const sockaddr_in& client_address) {
         char buffer[4096] = {0};
         ssize_t bytes_read = read(client_fd, buffer, sizeof(buffer));
         if (bytes_read <= 0) {
@@ -78,6 +80,16 @@ private:
 
         std::string raw_request(buffer, bytes_read);
         Request req = parse_request(raw_request);
+
+        // Inject remote IP into headers so middlewares/controllers can read client IP
+        char ipbuf[INET_ADDRSTRLEN] = {0};
+        const char* ip = inet_ntop(AF_INET, &client_address.sin_addr, ipbuf, sizeof(ipbuf));
+        if (ip) {
+            req.set_header("x-remote-addr", std::string(ip));
+        } else {
+            req.set_header("x-remote-addr", std::string("unknown"));
+        }
+
         Response res = handler_(req);
         
         std::string raw_response = res.to_string();

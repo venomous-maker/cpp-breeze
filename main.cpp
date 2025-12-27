@@ -1,5 +1,7 @@
 #include <breeze/breeze.hpp>
 #include "app/Providers/ViewServiceProvider.hpp"
+#include "app/Providers/MiddlewareServiceProvider.hpp"
+#include "app/Providers/ControllerServiceProvider.hpp"
 
 // Forward declarations of route registration functions
 void register_web_routes(breeze::core::Application& app);
@@ -9,7 +11,9 @@ int main(int argc, char** argv) {
     auto app = breeze::core::Application::create();
 
     // Register service providers
-    app->register_provider<app::Providers::ViewServiceProvider>();
+    app->register_provider<::app::Providers::ViewServiceProvider>();
+    app->register_provider<::app::Providers::MiddlewareServiceProvider>();
+    app->register_provider<::app::Providers::ControllerServiceProvider>();
 
     // Register routes from the routes directory
     register_web_routes(*app);

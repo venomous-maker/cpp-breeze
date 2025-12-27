@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <title>{{ title }}</title>
 </head>
@@ -16,5 +16,29 @@
             <li>{{ feature }}</li>
         @endforeach
     </ul>
+
+    <h3>Runtime Expression Examples</h3>
+    <p>Count: {{ stats.count }}</p>
+
+    @if(stats.count > 0)
+        <p>There are items available (count &gt; 0)</p>
+    @endif
+
+    @if(stats.count == 0)
+        <p>No items found (count == 0)</p>
+    @endif
+
+    @if(user.role == "admin" || user.is_owner == true)
+        <p>User has admin privileges or is owner.</p>
+    @endif
+
+    @unless(user.is_active && stats.count > 0)
+        <p>Either the user is inactive or there are no items.</p>
+    @endunless
+
+    @if(user.name == "Junie")
+        <p>Special greeting for Junie.</p>
+    @endif
+
 </body>
 </html>

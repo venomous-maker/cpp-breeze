@@ -1,6 +1,5 @@
 #include <breeze/support/view.hpp>
 #include <breeze/support/blade.hpp>
-#include <fstream>
 
 namespace breeze::support {
 
@@ -25,11 +24,8 @@ std::string View::render(const std::string& template_name, const nlohmann::json&
         return "View [" + template_name + "] not found in " + views_path_.string();
     }
 
-    std::ifstream file(full_path);
-    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-
     Blade blade;
-    return blade.render(content, data);
+    return blade.render_from_file(full_path, data);
 }
 
 } // namespace breeze::support

@@ -90,6 +90,14 @@ if(BREEZE_BUILD_TESTS)
   add_executable(view_test tests/view_test.cpp)
   target_link_libraries(view_test PRIVATE breeze::breeze)
   add_test(NAME view_test COMMAND view_test)
+
+  # Add json_dot_test to exercise dot-notation JSON helper
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/json_dot_test.cpp")
+    add_executable(json_dot_test tests/json_dot_test.cpp)
+    target_link_libraries(json_dot_test PRIVATE breeze::breeze)
+    add_test(NAME json_dot_test COMMAND json_dot_test)
+  endif()
+
   add_subdirectory(tests)
 endif()
 

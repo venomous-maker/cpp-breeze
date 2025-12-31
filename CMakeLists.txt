@@ -20,7 +20,6 @@ target_include_directories(breeze
 
 file(GLOB_RECURSE BREEZE_SOURCES CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
-  "${CMAKE_CURRENT_SOURCE_DIR}/routes/*.cpp"
 )
 
 list(FILTER BREEZE_SOURCES EXCLUDE REGEX "/src/commands/.*\\.cpp$")
@@ -93,3 +92,36 @@ if(BREEZE_BUILD_TESTS)
   add_test(NAME view_test COMMAND view_test)
   add_subdirectory(tests)
 endif()
+
+# Generate an aggregated routes header at configure-time so we can include a single header
+# that pulls in all route headers. This scans routes/ for .hpp and creates generated/routes_all.hpp.
+set(GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
+file(MAKE_DIRECTORY "${GENERATED_DIR}")
+
+file(GLOB_RECURSE ROUTE_HEADERS
+  RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/routes"
+  "${CMAKE_CURRENT_SOURCE_DIR}/routes/*.hpp"
+)
+
+# Require that route headers exist. If none found, stop configuration for a clearer error.
+if(ROUTE_HEADERS STREQUAL "")
+  message(FATAL_ERROR "No route headers found in ${CMAKE_CURRENT_SOURCE_DIR}/routes. Please add route .hpp files (e.g., routes/web.hpp).")
+endif()
+
+set(ROUTES_ALL_PATH "${GENERATED_DIR}/routes_all.hpp")
+file(WRITE "${ROUTES_ALL_PATH}" "#pragma once\n\n// Auto-generated routes aggregator. Do not edit.\n\n#include <breeze/breeze.hpp>\n\n")
+foreach(r ${ROUTE_HEADERS})
+  file(APPEND "${ROUTES_ALL_PATH}" "#include \"../routes/${r}\"\n")
+endforeach()
+
+# Define a single register_routes function that delegates to each route file's register_*_routes
+file(APPEND "${ROUTES_ALL_PATH}" "\ninline void register_routes(breeze::core::Application& app) {\n")
+foreach(r ${ROUTE_HEADERS})
+  get_filename_component(_name_we ${r} NAME_WE)
+  # Expect each header provides register_<name>_routes, e.g., web.hpp -> register_web_routes
+  file(APPEND "${ROUTES_ALL_PATH}" "    register_${_name_we}_routes(app);\n")
+endforeach()
+file(APPEND "${ROUTES_ALL_PATH}" "}\n")
+
+# Add generated include dir so the provider can `#include <routes_all.hpp>`
+target_include_directories(breeze PUBLIC $<BUILD_INTERFACE:${GENERATED_DIR}>)

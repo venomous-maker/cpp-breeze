@@ -114,12 +114,12 @@ foreach(r ${ROUTE_HEADERS})
   file(APPEND "${ROUTES_ALL_PATH}" "#include \"../routes/${r}\"\n")
 endforeach()
 
-# Define a single register_routes function that delegates to each route file's register_*_routes
+# Define a single register_routes function that delegates to each route file's register_routes
 file(APPEND "${ROUTES_ALL_PATH}" "\ninline void register_routes(breeze::core::Application& app) {\n")
 foreach(r ${ROUTE_HEADERS})
   get_filename_component(_name_we ${r} NAME_WE)
-  # Expect each header provides register_<name>_routes, e.g., web.hpp -> register_web_routes
-  file(APPEND "${ROUTES_ALL_PATH}" "    register_${_name_we}_routes(app);\n")
+  # Expect each header provides routes_<name> inline namespace with register_routes
+  file(APPEND "${ROUTES_ALL_PATH}" "    routes_${_name_we}::register_routes(app);\n")
 endforeach()
 file(APPEND "${ROUTES_ALL_PATH}" "}\n")
 

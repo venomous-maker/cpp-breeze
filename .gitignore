@@ -5,3 +5,13 @@ build
 _deps
 storage
 CMakeFiles
+libbreeze.a
+breeze_example
+breeze_app
+breeze_cli
+routes_all.hpp
+cmake_install.cmake
+CMakeCache.txt
+CMakeOutput.log
+CMakeError.log
+Makefile

@@ -3,6 +3,7 @@
 #include <breeze/core/application.hpp>
 #include <breeze/support/view.hpp>
 #include <breeze/support/view_engine.hpp>
+#include <breeze/http/response.hpp>
 
 namespace app::Providers {
 
@@ -26,7 +27,17 @@ public:
     }
 
     void boot() override {
-        // Any boot logic for view engine
+        // Register Response view renderer to use the container's IViewEngine
+        try {
+            if (app_.container().can_make<breeze::support::IViewEngine>()) {
+                auto engine = app_.container().make<breeze::support::IViewEngine>();
+                breeze::http::Response::set_view_renderer([engine](const std::string& tpl, const nlohmann::json& data) {
+                    return engine->render(tpl, data);
+                });
+            }
+        } catch (...) {
+            // ignore failures during boot
+        }
     }
 };
 

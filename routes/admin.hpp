@@ -2,7 +2,8 @@
 
 #include <breeze/breeze.hpp>
 
-inline void register_admin_routes(breeze::core::Application& app) {
+inline namespace routes_admin {
+inline void register_routes(breeze::core::Application& app) {
     auto& router = app.kernel().router();
     router.group({.prefix = "/admin"}, [&](auto& group) {
         group.get("/blade/cache", [&](const breeze::http::Request&) {
@@ -16,4 +17,4 @@ inline void register_admin_routes(breeze::core::Application& app) {
         });
     });
 }
-
+} // namespace routes_admin

@@ -121,6 +121,9 @@ public:
     using ViewRendererFn = std::function<std::string(const std::string&, const nlohmann::json&)>;
     static void set_view_renderer(ViewRendererFn fn) { view_renderer_ = std::move(fn); }
 
+    // Declare view here - implementation is provided in src/http/response.cpp
+    static Response view(const std::string& template_name, const nlohmann::json& data);
+
 
     static Response not_found(std::string message = "Not Found") {
         return Response{StatusCode::NotFound, std::move(message)};

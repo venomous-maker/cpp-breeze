@@ -20,6 +20,33 @@ public:
     const std::string& body() const { return body_; }
     const std::string& query_string() const { return query_string_; }
     
+    // Percent-decode a URL-encoded string (decodes %XX). Leaves '+' unchanged.
+    static std::string url_decode(const std::string& s) {
+        std::string out; out.reserve(s.size());
+        auto hex = [](char ch)->int {
+            if (ch >= '0' && ch <= '9') return ch - '0';
+            if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+            if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+            return -1;
+        };
+        for (size_t i = 0; i < s.size(); ++i) {
+            char c = s[i];
+            if (c == '%' && i + 2 < s.size()) {
+                int hi = hex(s[i+1]);
+                int lo = hex(s[i+2]);
+                if (hi >= 0 && lo >= 0) {
+                    char decoded = static_cast<char>((hi << 4) | lo);
+                    out.push_back(decoded);
+                    i += 2;
+                    continue;
+                }
+            }
+            // leave '+' as '+' to preserve literal plus signs
+            out.push_back(c);
+        }
+        return out;
+    }
+
     // Headers
     void set_header(std::string name, std::string value) { 
         std::transform(name.begin(), name.end(), name.begin(), ::tolower);
@@ -49,8 +76,8 @@ public:
             if (pos != std::string::npos) {
                 std::string key = pair.substr(0, pos);
                 std::string value = pair.substr(pos + 1);
-                // URL decode would go here
-                query_params_[key] = value;
+                // URL decode keys and values at the request layer
+                query_params_[url_decode(key)] = url_decode(value);
             }
         }
         

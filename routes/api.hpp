@@ -2,7 +2,8 @@
 
 #include <breeze/breeze.hpp>
 
-inline void register_api_routes(breeze::core::Application& app) {
+inline namespace routes_api {
+inline void register_routes(breeze::core::Application& app) {
     auto& router = app.kernel().router();
 
     router.group({.prefix = "/api"}, [&app](auto& group) {
@@ -22,4 +23,4 @@ inline void register_api_routes(breeze::core::Application& app) {
         });
     });
 }
-
+} // namespace routes_api

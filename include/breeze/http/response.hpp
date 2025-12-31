@@ -121,20 +121,6 @@ public:
     using ViewRendererFn = std::function<std::string(const std::string&, const nlohmann::json&)>;
     static void set_view_renderer(ViewRendererFn fn) { view_renderer_ = std::move(fn); }
 
-    static Response view(const std::string& template_name,
-                        const nlohmann::json& data = {}) {
-        if (view_renderer_) {
-            std::string rendered = view_renderer_(template_name, data);
-            Response res{StatusCode::OK, std::move(rendered)};
-            res.content_type("text/html");
-            return res;
-        }
-        // Fallback: return template name and data as debug text
-        nlohmann::json dbg = { {"template", template_name}, {"data", data} };
-        Response res{StatusCode::OK, dbg.dump(2)};
-        res.content_type("application/json");
-        return res;
-    }
 
     static Response not_found(std::string message = "Not Found") {
         return Response{StatusCode::NotFound, std::move(message)};

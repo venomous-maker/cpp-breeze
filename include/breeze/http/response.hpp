@@ -21,11 +21,16 @@ public:
     StatusCode status() const { return status_; }
     void set_status(StatusCode status) { status_ = status; }
     void set_status(int status) { status_ = static_cast<StatusCode>(status); }
-    
+
+    // Fluent status
+    Response& with_status(StatusCode status) { set_status(status); return *this; }
+    Response& with_status(int status) { set_status(status); return *this; }
+
     // Body
     const std::string& body() const { return body_; }
     void set_body(std::string body) { body_ = std::move(body); }
-    
+    Response& with_body(std::string body) { set_body(std::move(body)); return *this; }
+
     // Headers
     const std::unordered_map<std::string, std::string>& headers() const { return headers_; }
     
@@ -33,6 +38,8 @@ public:
         headers_[std::move(name)] = std::move(value); 
     }
     
+    Response& with_header(std::string name, std::string value) { set_header(std::move(name), std::move(value)); return *this; }
+
     std::string header(const std::string& name, const std::string& fallback = {}) const {
         auto it = headers_.find(name);
         return it != headers_.end() ? it->second : fallback;
@@ -43,10 +50,14 @@ public:
         set_header("Content-Type", type);
     }
     
+    Response& with_content_type(const std::string& type) { content_type(type); return *this; }
+
     void location(const std::string& url) {
         set_header("Location", url);
     }
     
+    Response& with_location(const std::string& url) { location(url); return *this; }
+
     // Cookie support (basic)
     void cookie(const std::string& name, const std::string& value,
                 int max_age = 3600, const std::string& path = "/",
@@ -67,7 +78,14 @@ public:
             set_header("Set-Cookie", cookie.str());
         }
     }
-    
+
+    Response& with_cookie(const std::string& name, const std::string& value,
+                int max_age = 3600, const std::string& path = "/",
+                bool http_only = true, bool secure = false) {
+        cookie(name, value, max_age, path, http_only, secure);
+        return *this;
+    }
+
     // Response building helpers
     static Response ok(std::string body = "") {
         return Response{StatusCode::OK, std::move(body)};
@@ -97,9 +115,27 @@ public:
         return res;
     }
     
-    static Response view(const std::string& template_name, 
-                        const nlohmann::json& data = {});
-    
+    // View rendering support: the application should provide a view renderer function
+    // that maps (template_name, data) -> rendered string. We allow a global function
+    // pointer to be set by the application bootstrap (view_renderer = ...).
+    using ViewRendererFn = std::function<std::string(const std::string&, const nlohmann::json&)>;
+    static void set_view_renderer(ViewRendererFn fn) { view_renderer_ = std::move(fn); }
+
+    static Response view(const std::string& template_name,
+                        const nlohmann::json& data = {}) {
+        if (view_renderer_) {
+            std::string rendered = view_renderer_(template_name, data);
+            Response res{StatusCode::OK, std::move(rendered)};
+            res.content_type("text/html");
+            return res;
+        }
+        // Fallback: return template name and data as debug text
+        nlohmann::json dbg = { {"template", template_name}, {"data", data} };
+        Response res{StatusCode::OK, dbg.dump(2)};
+        res.content_type("application/json");
+        return res;
+    }
+
     static Response not_found(std::string message = "Not Found") {
         return Response{StatusCode::NotFound, std::move(message)};
     }
@@ -134,6 +170,7 @@ private:
     StatusCode status_ = StatusCode::OK;
     std::string body_;
     std::unordered_map<std::string, std::string> headers_;
+    static inline ViewRendererFn view_renderer_ = nullptr;
 };
 
 inline std::string Response::to_string() const {
@@ -165,3 +202,4 @@ inline std::string Response::to_string() const {
 }
 
 } // namespace breeze::http
+

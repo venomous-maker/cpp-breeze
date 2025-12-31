@@ -4,7 +4,8 @@
 #include "../app/Http/Controllers/UserController.hpp"
 #include "../app/Http/Controllers/HomeController.hpp"
 
-inline void register_web_routes(breeze::core::Application& app) {
+inline namespace routes_web {
+inline void register_routes(breeze::core::Application& app) {
     auto& router = app.kernel().router();
     // Simple welcome route
     router.get("/", [](const breeze::http::Request&) {
@@ -29,4 +30,4 @@ inline void register_web_routes(breeze::core::Application& app) {
         group.get("/{id}", &UserController::show);
     });
 }
-
+} // namespace routes_web

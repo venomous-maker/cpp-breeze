@@ -3,10 +3,12 @@
   "file": {
     "dir": "/tmp/breeze_sessions"
   },
+  "cookie": {
+    "name": "BREEZE_SESSION"
+  },
   "redis": {
     "host": "127.0.0.1",
     "port": 6379,
     "prefix": "breeze:session:"
   }
 }
-

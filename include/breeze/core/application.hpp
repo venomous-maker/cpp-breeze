@@ -11,6 +11,7 @@
 #include <functional>
 #include <vector>
 #include <iostream>
+#include <breeze/http/redis_session_repository.hpp>
 
 namespace breeze::core {
 
@@ -75,11 +76,38 @@ public:
             std::cout << "Development server started on http://" << host << ":" << port << std::endl;
         }
 
+        // Require session.driver in config (default to file if missing) similar to Laravel
+        if (!config_.has("session.driver")) {
+            std::cerr << "Warning: session.driver not set in configuration; defaulting to 'file' storage.\n";
+            config_.set("session.driver", "file");
+        }
+        // Build session repository based on config (driver: file|redis)
+        std::shared_ptr<breeze::http::ISessionRepository> repo;
+        std::string driver = config_.get("session.driver", "file");
+        if (driver == "redis") {
+            std::string rhost = config_.get("session.redis.host", "127.0.0.1");
+            int rport = std::stoi(config_.get("session.redis.port", "6379"));
+            std::string prefix = config_.get("session.redis.prefix", "breeze:session:");
+            repo = std::make_shared<breeze::http::RedisSessionRepository>(rhost, rport, prefix);
+        } else {
+            std::string dir = config_.get("session.file.dir", "/tmp/breeze_sessions");
+            repo = std::make_shared<breeze::http::FileSessionRepository>(dir);
+        }
+
+        // Upload settings from config
+        std::string upload_dir = config_.get("files.upload_dir", "/tmp");
+        size_t max_request_size = std::stoull(config_.get("files.max_request_size", "0"));
+        size_t max_file_size = std::stoull(config_.get("files.max_file_size", "0"));
+        // Allowed extensions/types as comma separated lists
+        auto split_csv = [](const std::string& s){ std::vector<std::string> out; std::istringstream ss(s); std::string item; while (std::getline(ss, item, ',')) { if (!item.empty()) { out.push_back(item); } } return out; };
+        std::vector<std::string> allowed_exts = split_csv(config_.get("files.allowed_extensions", ""));
+        std::vector<std::string> allowed_types = split_csv(config_.get("files.allowed_types", ""));
+
         breeze::http::Server server([this](const breeze::http::Request& req) {
             // Use this Application instance to handle the request (not a separate singleton)
             return this->handle(req);
-        });
-        
+        }, repo, upload_dir, max_request_size, max_file_size, allowed_exts, allowed_types, nullptr);
+
         server.listen(host, port);
     }
     
@@ -151,6 +179,22 @@ private:
             
         if (!config_.has("app.url") || !breeze::support::Env::get("APP_URL").empty())
             config_.set("app.url", breeze::support::Env::get("APP_URL", config_.get("app.url", "http://localhost:8080")));
+
+        // Session config overrides from ENV
+        if (!config_.has("session.driver") || !breeze::support::Env::get("SESSION_DRIVER").empty())
+            config_.set("session.driver", breeze::support::Env::get("SESSION_DRIVER", config_.get("session.driver", "file")));
+
+        if (!config_.has("session.file.dir") || !breeze::support::Env::get("SESSION_FILE_DIR").empty())
+            config_.set("session.file.dir", breeze::support::Env::get("SESSION_FILE_DIR", config_.get("session.file.dir", "/tmp/breeze_sessions")));
+
+        if (!config_.has("session.redis.host") || !breeze::support::Env::get("SESSION_REDIS_HOST").empty())
+            config_.set("session.redis.host", breeze::support::Env::get("SESSION_REDIS_HOST", config_.get("session.redis.host", "127.0.0.1")));
+
+        if (!config_.has("session.redis.port") || !breeze::support::Env::get("SESSION_REDIS_PORT").empty())
+            config_.set("session.redis.port", breeze::support::Env::get("SESSION_REDIS_PORT", config_.get("session.redis.port", "6379")));
+
+        if (!config_.has("session.redis.prefix") || !breeze::support::Env::get("SESSION_REDIS_PREFIX").empty())
+            config_.set("session.redis.prefix", breeze::support::Env::get("SESSION_REDIS_PREFIX", config_.get("session.redis.prefix", "breeze:session:")));
     }
     
     Container container_;
@@ -160,3 +204,4 @@ private:
 };
 
 } // namespace breeze::core
+

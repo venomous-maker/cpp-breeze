@@ -91,7 +91,10 @@ private:
         }
 
         Response res = handler_(req);
-        
+        // Add CPP BREEZE SIGNATURE
+        if (res.header("X-Powered-By", "").empty()) {
+            res.with_header("X-Powered-By", "Cpp Breeze");
+        }
         std::string raw_response = res.to_string();
         send(client_fd, raw_response.c_str(), raw_response.size(), 0);
         close(client_fd);

@@ -370,6 +370,17 @@ public:
 
     const std::unordered_map<std::string, breeze::http::UploadedFile>& files() const { return files_; }
 
+    // Uploaded file helpers
+    const breeze::http::UploadedFile* file(const std::string& name) const {
+        auto it = files_.find(name);
+        if (it == files_.end()) return nullptr;
+        return &it->second;
+    }
+
+    bool has_file(const std::string& name) const {
+        return files_.find(name) != files_.end();
+    }
+
 private:
     void parse_json() {
         if (body_.empty()) {

@@ -3,6 +3,8 @@
 #include <breeze/http/request.hpp>
 #include <breeze/http/response.hpp>
 #include <breeze/http/status_code.hpp>
+#include <breeze/http/session.hpp>
+#include <breeze/http/parsers.hpp>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -25,7 +27,7 @@ class Server {
 public:
     using RequestHandler = std::function<Response(const Request&)>;
 
-    explicit Server(RequestHandler handler) : handler_(std::move(handler)) {}
+    explicit Server(RequestHandler handler) : handler_(std::move(handler)), session_store_(std::make_shared<Session>()) {}
 
     [[noreturn]] void listen(const std::string& host, int port) {
         int server_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -71,7 +73,7 @@ public:
 private:
     // Updated to accept client address so we can inject remote IP into the Request headers
     void handle_client(int client_fd, const sockaddr_in& client_address) {
-        char buffer[4096] = {0};
+        char buffer[8192] = {0};
         ssize_t bytes_read = read(client_fd, buffer, sizeof(buffer));
         if (bytes_read <= 0) {
             close(client_fd);
@@ -80,6 +82,9 @@ private:
 
         std::string raw_request(buffer, bytes_read);
         Request req = parse_request(raw_request);
+
+        // Attach session store
+        req.set_session(session_store_);
 
         // Inject remote IP into headers so middlewares/controllers can read client IP
         char ipbuf[INET_ADDRSTRLEN] = {0};
@@ -131,6 +136,7 @@ private:
         }
 
         // Headers
+        std::unordered_map<std::string, std::string> headers;
         while (std::getline(stream, line) && line != "\r" && !line.empty()) {
             if (!line.empty() && line.back() == '\r') line.pop_back();
             size_t colon = line.find(':');
@@ -147,10 +153,36 @@ private:
         std::string body((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
         req.set_body(body);
 
+        // Enhanced parsing: content-type aware
+        std::string ct = req.header("content-type", "");
+        if (!ct.empty()) {
+            // Lowercase content-type for checks
+            std::string lct = ct;
+            std::transform(lct.begin(), lct.end(), lct.begin(), ::tolower);
+            if (lct.find("application/x-www-form-urlencoded") != std::string::npos) {
+                auto m = Parsers::parse_form_urlencoded(body);
+                req.set_form_params(m);
+            } else if (lct.find("multipart/form-data") != std::string::npos) {
+                // find boundary
+                size_t bpos = ct.find("boundary=");
+                if (bpos != std::string::npos) {
+                    std::string boundary = ct.substr(bpos + 9);
+                    // strip potential quotes
+                    if (!boundary.empty() && boundary.front() == '"' && boundary.back() == '"') boundary = boundary.substr(1, boundary.size()-2);
+                    std::unordered_map<std::string, std::string> fields;
+                    std::unordered_map<std::string, UploadedFile> files;
+                    Parsers::parse_multipart(body, boundary, fields, files);
+                    req.set_form_params(fields);
+                    req.set_uploaded_files(files);
+                }
+            }
+        }
+
         return req;
     }
 
     RequestHandler handler_;
+    std::shared_ptr<Session> session_store_;
 };
 
 } // namespace breeze::http

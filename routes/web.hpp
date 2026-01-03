@@ -4,7 +4,7 @@
 #include "../app/Http/Controllers/UserController.hpp"
 #include "../app/Http/Controllers/HomeController.hpp"
 
-inline namespace routes_web {
+namespace routes_web {
 inline void register_routes(breeze::core::Application& app) {
     auto& router = app.kernel().router();
     // Simple welcome route

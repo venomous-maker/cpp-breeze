@@ -2,7 +2,7 @@
 
 #include <breeze/breeze.hpp>
 
-inline namespace routes_admin {
+namespace routes_admin {
 inline void register_routes(breeze::core::Application& app) {
     auto& router = app.kernel().router();
     router.group({.prefix = "/admin"}, [&](auto& group) {

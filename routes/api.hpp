@@ -2,7 +2,7 @@
 
 #include <breeze/breeze.hpp>
 
-inline namespace routes_api {
+namespace routes_api {
 inline void register_routes(breeze::core::Application& app) {
     auto& router = app.kernel().router();
 

@@ -14,7 +14,12 @@ namespace breeze::http {
 struct UploadedFile {
     std::string filename;
     std::string content_type;
-    std::string content; // binary-safe storage
+    std::string content; // binary-safe storage (may be empty when saved to disk)
+    std::string path;    // filesystem path where the file was saved (if applicable)
+
+    [[nodiscard]] bool is_valid() const {
+        return !filename.empty() && (!path.empty() || !content.empty());
+    }
 };
 
 // Parsers: helper static functions to parse HTTP bodies
@@ -132,6 +137,7 @@ public:
                 uf.filename = filename;
                 uf.content_type = ctype;
                 uf.content = content;
+                uf.path = "";
                 files[name] = std::move(uf);
             } else if (!name.empty()) {
                 fields[name] = content;

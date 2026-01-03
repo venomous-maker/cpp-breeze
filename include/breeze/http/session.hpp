@@ -98,6 +98,34 @@ public:
         flash_next_.clear();
     }
 
+    // Serialize session to JSON for persistence
+    nlohmann::json serialize() const {
+        std::lock_guard<std::mutex> lk(m_);
+        nlohmann::json j = nlohmann::json::object();
+        j["data"] = nlohmann::json::object();
+        for (auto &p : data_) j["data"][p.first] = p.second;
+        j["flash_next"] = nlohmann::json::object();
+        for (auto &p : flash_next_) j["flash_next"][p.first] = p.second;
+        j["flash_now"] = nlohmann::json::object();
+        for (auto &p : flash_now_) j["flash_now"][p.first] = p.second;
+        return j;
+    }
+
+    // Deserialize into session (overwrites existing content)
+    void deserialize(const nlohmann::json& j) {
+        std::lock_guard<std::mutex> lk(m_);
+        data_.clear(); flash_next_.clear(); flash_now_.clear();
+        if (j.contains("data") && j["data"].is_object()) {
+            for (auto it = j["data"].begin(); it != j["data"].end(); ++it) data_[it.key()] = it.value();
+        }
+        if (j.contains("flash_next") && j["flash_next"].is_object()) {
+            for (auto it = j["flash_next"].begin(); it != j["flash_next"].end(); ++it) flash_next_[it.key()] = it.value();
+        }
+        if (j.contains("flash_now") && j["flash_now"].is_object()) {
+            for (auto it = j["flash_now"].begin(); it != j["flash_now"].end(); ++it) flash_now_[it.key()] = it.value();
+        }
+    }
+
 private:
     mutable std::mutex m_;
     std::unordered_map<std::string, nlohmann::json> data_;

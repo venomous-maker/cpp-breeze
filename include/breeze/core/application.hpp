@@ -90,7 +90,7 @@ public:
         if (driver == "redis") {
             std::string rhost = config_.get("session.redis.host", "127.0.0.1");
             int rport = std::stoi(config_.get("session.redis.port", "6379"));
-            std::string prefix = config_.get("session.redis.prefix", "breeze:session:");
+            std::string prefix = config_.get("session.prefix", "breeze:session:");
             repo = std::make_shared<breeze::http::RedisSessionRepository>(rhost, rport, prefix, cookie_name);
         } else {
             std::string dir = config_.get("session.file.dir", "/tmp/breeze_sessions");
@@ -205,8 +205,8 @@ private:
         if (!config_.has("session.redis.port") || !breeze::support::Env::get("SESSION_REDIS_PORT").empty())
             config_.set("session.redis.port", breeze::support::Env::get("SESSION_REDIS_PORT", config_.get("session.redis.port", "6379")));
 
-        if (!config_.has("session.redis.prefix") || !breeze::support::Env::get("SESSION_REDIS_PREFIX").empty())
-            config_.set("session.redis.prefix", breeze::support::Env::get("SESSION_REDIS_PREFIX", config_.get("session.redis.prefix", "breeze:session:")));
+        if (!config_.has("session.prefix") || !breeze::support::Env::get("SESSION_PREFIX").empty())
+            config_.set("session.prefix", breeze::support::Env::get("SESSION_PREFIX", config_.get("session.prefix", "breeze:session:")));
 
         if (!config_.has("session.cookie.name") || !breeze::support::Env::get("SESSION_COOKIE_NAME").empty())
             config_.set("session.cookie.name", breeze::support::Env::get("SESSION_COOKIE_NAME", config_.get("session.cookie.name", "BREEZE_SESSION")));

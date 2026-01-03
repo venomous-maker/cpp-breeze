@@ -61,15 +61,16 @@ public:
     // Cookie support (basic)
     void cookie(const std::string& name, const std::string& value,
                 int max_age = 3600, const std::string& path = "/",
-                bool http_only = true, bool secure = false) {
+                bool http_only = true, bool secure = false, const std::string& same_site = "") {
         std::ostringstream cookie;
         cookie << name << "=" << value
                << "; Max-Age=" << max_age
                << "; Path=" << path;
-        
+
         if (http_only) cookie << "; HttpOnly";
         if (secure) cookie << "; Secure";
-        
+        if (!same_site.empty()) cookie << "; SameSite=" << same_site;
+
         // Append to existing Set-Cookie headers
         auto it = headers_.find("Set-Cookie");
         if (it != headers_.end()) {
@@ -81,8 +82,8 @@ public:
 
     Response& with_cookie(const std::string& name, const std::string& value,
                 int max_age = 3600, const std::string& path = "/",
-                bool http_only = true, bool secure = false) {
-        cookie(name, value, max_age, path, http_only, secure);
+                bool http_only = true, bool secure = false, const std::string& same_site = "") {
+        cookie(name, value, max_age, path, http_only, secure, same_site);
         return *this;
     }
 

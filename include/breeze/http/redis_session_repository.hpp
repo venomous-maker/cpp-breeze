@@ -26,8 +26,8 @@ class Request; // forward
 // implementation.
 class RedisSessionRepository : public ISessionRepository {
 public:
-    explicit RedisSessionRepository(std::string host = "127.0.0.1", int port = 6379, std::string prefix = "breeze:session:")
-        : host_(std::move(host)), port_(port), prefix_(std::move(prefix)) {
+    explicit RedisSessionRepository(std::string host = "127.0.0.1", int port = 6379, std::string prefix = "breeze:session:", std::string cookie_name = "BREEZE_SESSION")
+        : host_(std::move(host)), port_(port), prefix_(std::move(prefix)), cookie_name_(std::move(cookie_name)) {
 #ifdef BREEZE_HAVE_HIREDIS
         ctx_ = redisConnect(host_.c_str(), port_);
         if (!ctx_ || ctx_->err) {
@@ -44,7 +44,7 @@ public:
     }
 
     std::tuple<std::string, std::shared_ptr<Session>, bool> get_session_for_request(const Request& req) override {
-        std::string sid = req.cookie("BREEZE_SESSION", "");
+        std::string sid = req.cookie(cookie_name_, "");
         if (!sid.empty()) {
             auto s = load_session(sid);
             if (s) return {sid, s, false};
@@ -202,6 +202,7 @@ private:
     std::string host_;
     int port_ = 6379;
     std::string prefix_;
+    std::string cookie_name_;
 };
 
 } // namespace breeze::http

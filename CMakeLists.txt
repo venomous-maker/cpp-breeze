@@ -5,6 +5,7 @@ project(breeze VERSION 0.1.0 LANGUAGES CXX)
 option(BREEZE_BUILD_EXAMPLES "Build breeze examples" ON)
 option(BREEZE_BUILD_CLI "Build breeze CLI" ON)
 option(BREEZE_BUILD_TESTS "Build breeze tests" OFF)
+option(BREEZE_USE_HIREDIS "Link against hiredis for Redis session backend" OFF)
 
 add_library(breeze)
 add_library(breeze::breeze ALIAS breeze)
@@ -64,6 +65,35 @@ find_package(OpenSSL REQUIRED)
 if(OpenSSL_FOUND)
   message(STATUS "Found OpenSSL: ${OpenSSL_VERSION}")
   target_link_libraries(breeze PUBLIC OpenSSL::Crypto)
+endif()
+
+# Optional hiredis
+if(BREEZE_USE_HIREDIS)
+  find_path(HIREDIS_INCLUDE_DIR hiredis/hiredis.h)
+  find_library(HIREDIS_LIBRARY NAMES hiredis)
+  if(HIREDIS_INCLUDE_DIR AND HIREDIS_LIBRARY)
+    message(STATUS "Found hiredis: include=${HIREDIS_INCLUDE_DIR} lib=${HIREDIS_LIBRARY}")
+    target_include_directories(breeze PUBLIC ${HIREDIS_INCLUDE_DIR})
+    target_link_libraries(breeze PUBLIC ${HIREDIS_LIBRARY})
+    add_definitions(-DBREEZE_HAVE_HIREDIS=1)
+  else()
+    message(STATUS "hiredis not found on system; attempting to fetch and build hiredis...")
+    include(FetchContent)
+    FetchContent_Declare(
+      hiredis
+      GIT_REPOSITORY https://github.com/redis/hiredis.git
+      GIT_TAG v1.3.0
+    )
+    # Try to fetch and make available; if it fails we will continue without hiredis
+    FetchContent_MakeAvailable(hiredis)
+    if(TARGET hiredis)
+      message(STATUS "Built fetched hiredis subproject")
+      target_link_libraries(breeze PUBLIC hiredis)
+      add_definitions(-DBREEZE_HAVE_HIREDIS=1)
+    else()
+      message(WARNING "BREEZE_USE_HIREDIS enabled but hiredis unavailable; continuing without hiredis support.")
+    endif()
+  endif()
 endif()
 
 #install(EXPORT breezeTargets

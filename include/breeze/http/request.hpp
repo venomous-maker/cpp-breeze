@@ -9,16 +9,10 @@
 #include <algorithm>
 #include <memory>
 
-namespace breeze::http {
+#include "breeze/http/session.hpp"
+#include "breeze/http/parsers.hpp"
 
-// Simple per-request session store interface. Real apps can provide a shared
-// session store and set it on the Request (set_session_store). This is
-// intentionally minimal: it stores string->json values and supports flash data.
-struct SessionStore {
-    std::unordered_map<std::string, nlohmann::json> data;
-    std::unordered_map<std::string, nlohmann::json> flash_next;
-    std::unordered_map<std::string, nlohmann::json> flash_now;
-};
+namespace breeze::http {
 
 class Request {
 public:
@@ -30,67 +24,40 @@ public:
     const std::string& body() const { return body_; }
     const std::string& query_string() const { return query_string_; }
 
-    // Allow wiring a session store (usually by server infra or Application) so
-    // Request::session() and flash() behave across requests.
-    void set_session_store(std::shared_ptr<SessionStore> store) { session_ = std::move(store); }
+    // Allow wiring a shared Session (usually by server infra or Application)
+    void set_session(std::shared_ptr<Session> s) { session_ = std::move(s); if (session_) session_->sweep_flash(); }
 
-    // Basic session API (Laravel-like)
+    // Basic session API (Laravel-like) - kept for backward compatibility
     nlohmann::json session(const std::string& key, nlohmann::json fallback = {}) const {
         if (!session_) return fallback;
-        auto it = session_->data.find(key);
-        if (it == session_->data.end()) return fallback;
-        return it->second;
+        return session_->get(key, fallback);
     }
 
     void session_put(const std::string& key, const nlohmann::json& value) {
-        if (!session_) session_ = std::make_shared<SessionStore>();
-        session_->data[key] = value;
+        if (!session_) session_ = std::make_shared<Session>();
+        session_->put(key, value);
     }
 
     bool session_has(const std::string& key) const {
         if (!session_) return false;
-        return session_->data.find(key) != session_->data.end();
+        return session_->has(key);
     }
 
     // Flash for next request
     void flash(const std::string& key, const nlohmann::json& value) {
-        if (!session_) session_ = std::make_shared<SessionStore>();
-        session_->flash_next[key] = value;
+        if (!session_) session_ = std::make_shared<Session>();
+        session_->flash(key, value);
     }
 
     // Retrieve flashed data for this request (set by previous request)
     nlohmann::json old(const std::string& key, nlohmann::json fallback = {}) const {
         if (!session_) return fallback;
-        auto it = session_->flash_now.find(key);
-        if (it == session_->flash_now.end()) return fallback;
-        return it->second;
+        return session_->flash_now(key, fallback);
     }
 
     // Percent-decode a URL-encoded string (decodes %XX). Leaves '+' unchanged.
     static std::string url_decode(const std::string& s) {
-        std::string out; out.reserve(s.size());
-        auto hex = [](char ch)->int {
-            if (ch >= '0' && ch <= '9') return ch - '0';
-            if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
-            if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
-            return -1;
-        };
-        for (size_t i = 0; i < s.size(); ++i) {
-            char c = s[i];
-            if (c == '%' && i + 2 < s.size()) {
-                int hi = hex(s[i+1]);
-                int lo = hex(s[i+2]);
-                if (hi >= 0 && lo >= 0) {
-                    char decoded = static_cast<char>((hi << 4) | lo);
-                    out.push_back(decoded);
-                    i += 2;
-                    continue;
-                }
-            }
-            // leave '+' as '+' to preserve literal plus signs
-            out.push_back(c);
-        }
-        return out;
+        return Parsers::url_decode(s);
     }
 
     // Headers
@@ -151,22 +118,10 @@ public:
     }
 
     // Query parameters
-    void parse_query_string() {
+    void parse_query_string() const {
         if (query_parsed_) return;
-        
-        std::istringstream stream(query_string_);
-        std::string pair;
-        
-        while (std::getline(stream, pair, '&')) {
-            size_t pos = pair.find('=');
-            if (pos != std::string::npos) {
-                std::string key = pair.substr(0, pos);
-                std::string value = pair.substr(pos + 1);
-                // URL decode keys and values at the request layer
-                query_params_[url_decode(key)] = url_decode(value);
-            }
-        }
-        
+        auto m = Parsers::parse_query(query_string_);
+        query_params_ = std::move(m);
         query_parsed_ = true;
     }
     
@@ -409,6 +364,12 @@ public:
         query_parsed_ = false;
     }
 
+    // Allow server/infra to populate parsed form fields and uploaded files
+    void set_form_params(const std::unordered_map<std::string, std::string>& m) { form_params_ = m; form_parsed_ = true; }
+    void set_uploaded_files(const std::unordered_map<std::string, breeze::http::UploadedFile>& f) { files_ = f; }
+
+    const std::unordered_map<std::string, breeze::http::UploadedFile>& files() const { return files_; }
+
 private:
     void parse_json() {
         if (body_.empty()) {
@@ -436,6 +397,7 @@ private:
 
     mutable std::unordered_map<std::string, std::string> form_params_;
     mutable bool form_parsed_ = false;
+    std::unordered_map<std::string, breeze::http::UploadedFile> files_;
 
     std::unordered_map<std::string, std::string> headers_;
     mutable std::unordered_map<std::string, std::string> cookies_;
@@ -443,7 +405,7 @@ private:
     std::unordered_map<std::string, std::string> params_; // Path parameters
 
     // Optional per-request session pointer
-    std::shared_ptr<SessionStore> session_ = nullptr;
+    std::shared_ptr<Session> session_ = nullptr;
 };
 
 } // namespace breeze::http

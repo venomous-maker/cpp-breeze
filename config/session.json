@@ -1,0 +1,12 @@
+{
+  "driver": "file",
+  "file": {
+    "dir": "/tmp/breeze_sessions"
+  },
+  "redis": {
+    "host": "127.0.0.1",
+    "port": 6379,
+    "prefix": "breeze:session:"
+  }
+}
+

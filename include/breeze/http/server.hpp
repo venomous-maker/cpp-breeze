@@ -35,9 +35,10 @@ public:
     explicit Server(RequestHandler handler, std::shared_ptr<ISessionRepository> repo = nullptr, std::string upload_dir = "/tmp",
                     size_t max_request_size = 0, size_t max_file_size = 0,
                     std::vector<std::string> allowed_exts = {}, std::vector<std::string> allowed_types = {},
+                    std::string cookie_name = "BREEZE_SESSION", bool cookie_secure = false, bool cookie_http_only = true, std::string cookie_same_site = "Lax",
                     std::function<bool(const std::string&, const UploadedFile&)> scan_cb = nullptr)
         : handler_(std::move(handler)), repo_(std::move(repo)), upload_dir_(std::move(upload_dir)),
-          max_request_size_(max_request_size), max_file_size_(max_file_size), allowed_exts_(std::move(allowed_exts)), allowed_types_(std::move(allowed_types)), scan_cb_(std::move(scan_cb)) {
+          max_request_size_(max_request_size), max_file_size_(max_file_size), allowed_exts_(std::move(allowed_exts)), allowed_types_(std::move(allowed_types)), cookie_name_(std::move(cookie_name)), cookie_secure_(cookie_secure), cookie_http_only_(cookie_http_only), cookie_same_site_(std::move(cookie_same_site)), scan_cb_(std::move(scan_cb)) {
         if (!repo_) repo_ = std::make_shared<FileSessionRepository>();
     }
 
@@ -126,9 +127,9 @@ private:
 
         Response res = handler_(req);
 
-        // If we created a new session, set cookie on response
+        // If we created a new session, set cookie on response using configured flags
         if (session_is_new) {
-            res.with_cookie("BREEZE_SESSION", session_id, 60*60*24*30, "/", true, false);
+            res.with_cookie(cookie_name_, session_id, 60*60*24*30, "/", cookie_http_only_, cookie_secure_, cookie_same_site_);
         }
 
         // Persist session
@@ -282,6 +283,10 @@ private:
     size_t max_file_size_;
     std::vector<std::string> allowed_exts_;
     std::vector<std::string> allowed_types_;
+    std::string cookie_name_;
+    bool cookie_secure_ = false;
+    bool cookie_http_only_ = true;
+    std::string cookie_same_site_;
     std::function<bool(const std::string&, const UploadedFile&)> scan_cb_;
 };
 

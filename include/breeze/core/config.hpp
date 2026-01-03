@@ -151,8 +151,8 @@ private:
             values_[current_key] = json.dump();
         }
     }
-    
-    std::vector<std::string> split_key(const std::string& key) const {
+
+    static std::vector<std::string> split_key(const std::string& key) {
         std::vector<std::string> parts;
         size_t start = 0;
         size_t end = key.find('.');
@@ -166,8 +166,8 @@ private:
         
         return parts;
     }
-    
-    std::vector<std::string> split_array(const std::string& str) const {
+
+    static std::vector<std::string> split_array(const std::string& str) {
         std::vector<std::string> result;
         std::string item;
         std::istringstream stream(str);

@@ -4,6 +4,7 @@
 #include <breeze/http/response.hpp>
 
 #include <functional>
+#include <ranges>
 #include <vector>
 
 namespace breeze::http {
@@ -15,11 +16,10 @@ public:
 
     void add(Middleware mw) { middlewares_.push_back(std::move(mw)); }
 
-    Response run(const Request& request, Next last) const
+    [[nodiscard]] Response run(const Request& request, Next last) const
     {
         Next next = std::move(last);
-        for (auto it = middlewares_.rbegin(); it != middlewares_.rend(); ++it) {
-            Middleware mw = *it;
+        for (auto mw : std::ranges::reverse_view(middlewares_)) {
             Next prev = std::move(next);
             next = [mw = std::move(mw), prev = std::move(prev)](const Request& req) {
                 return mw(req, prev);

@@ -106,10 +106,19 @@ public:
         std::vector<std::string> allowed_exts = split_csv(config_.get("files.allowed_extensions", ""));
         std::vector<std::string> allowed_types = split_csv(config_.get("files.allowed_types", ""));
 
+        auto parse_bool = [](const std::string& s)->bool {
+            std::string v = s;
+            std::transform(v.begin(), v.end(), v.begin(), ::tolower);
+            return v == "1" || v == "true" || v == "yes";
+        };
+        bool cookie_secure = parse_bool(config_.get("session.cookie.secure", "false"));
+        bool cookie_http_only = parse_bool(config_.get("session.cookie.http_only", "true"));
+        std::string cookie_same_site = config_.get("session.cookie.same_site", "Lax");
+
         breeze::http::Server server([this](const breeze::http::Request& req) {
             // Use this Application instance to handle the request (not a separate singleton)
             return this->handle(req);
-        }, repo, upload_dir, max_request_size, max_file_size, allowed_exts, allowed_types, nullptr);
+        }, repo, upload_dir, max_request_size, max_file_size, allowed_exts, allowed_types, cookie_name, cookie_secure, cookie_http_only, cookie_same_site, nullptr);
 
         server.listen(host, port);
     }
@@ -201,6 +210,15 @@ private:
 
         if (!config_.has("session.cookie.name") || !breeze::support::Env::get("SESSION_COOKIE_NAME").empty())
             config_.set("session.cookie.name", breeze::support::Env::get("SESSION_COOKIE_NAME", config_.get("session.cookie.name", "BREEZE_SESSION")));
+
+        if (!config_.has("session.cookie.secure") || !breeze::support::Env::get("SESSION_COOKIE_SECURE").empty())
+            config_.set("session.cookie.secure", breeze::support::Env::get("SESSION_COOKIE_SECURE", config_.get("session.cookie.secure", "false")));
+
+        if (!config_.has("session.cookie.http_only") || !breeze::support::Env::get("SESSION_COOKIE_HTTP_ONLY").empty())
+            config_.set("session.cookie.http_only", breeze::support::Env::get("SESSION_COOKIE_HTTP_ONLY", config_.get("session.cookie.http_only", "true")));
+
+        if (!config_.has("session.cookie.same_site") || !breeze::support::Env::get("SESSION_COOKIE_SAMESITE").empty())
+            config_.set("session.cookie.same_site", breeze::support::Env::get("SESSION_COOKIE_SAMESITE", config_.get("session.cookie.same_site", "Lax")));
     }
     
     Container container_;

@@ -6,6 +6,10 @@
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <regex>
+#include <cstdlib>
+#include <sstream>
+#include <algorithm>
 
 namespace breeze::core {
 
@@ -63,22 +67,22 @@ public:
     std::string get(const std::string& key, std::string fallback = {}) const {
         auto parts = split_key(key);
         const auto* current_map = &values_;
-        
+
         for (size_t i = 0; i < parts.size(); ++i) {
             auto it = current_map->find(parts[i]);
             if (it == current_map->end()) {
                 return fallback;
             }
-            
+
             if (i == parts.size() - 1) {
                 return it->second;
             }
-            
+
             // For simplicity, we don't support nested objects in this basic version
             // In a full implementation, we'd store nlohmann::json objects
             return fallback;
         }
-        
+
         return fallback;
     }
     
@@ -106,7 +110,7 @@ public:
     // Environment variable helpers
     static std::string env(const std::string& key, std::string fallback = {}) {
         if (const char* val = std::getenv(key.c_str())) {
-            return std::string(val);
+            return {val};
         }
         return fallback;
     }
@@ -122,6 +126,11 @@ private:
             
             std::string filename = file_path.stem().string();
             flatten_json(filename, json);
+
+            // After flattening the JSON, resolve any env(...) expressions in loaded values
+            for (auto& kv : values_) {
+                kv.second = resolve_env_in_value(kv.second);
+            }
         } catch (...) {
             // Silently fail on config errors
         }
@@ -148,7 +157,47 @@ private:
             }
             values_[current_key] = array_str;
         } else {
+            // Use the raw dumped value; for JSON strings this will include quotes
             values_[current_key] = json.dump();
+        }
+    }
+
+    // Resolve env(...) expressions inside a configuration value.
+    // Supports forms: env(KEY) or env(KEY, default) with optional quotes around arguments.
+    static std::string resolve_env_in_value(const std::string& raw) {
+        std::string s = raw;
+        // Strip surrounding JSON string quotes if present
+        if (s.size() >= 2 && s.front() == '"' && s.back() == '"') {
+            s = s.substr(1, s.size() - 2);
+        }
+
+        try {
+            static const std::regex re(R"(env\(\s*(['"]?)([^'")]+)\1\s*(?:,\s*(['"]?)([^'")]+)\3\s*)?\))", std::regex::icase);
+            std::string result;
+            std::size_t last_pos = 0;
+            auto begin = std::sregex_iterator(s.begin(), s.end(), re);
+            auto end = std::sregex_iterator();
+            for (auto it = begin; it != end; ++it) {
+                std::smatch m = *it;
+                // Append text before match
+                result.append(s.substr(last_pos, m.position() - last_pos));
+
+                std::string key = m.size() >= 3 ? m[2].str() : std::string();
+                std::string def = m.size() >= 5 ? m[4].str() : std::string();
+
+                std::string val = Config::env(key, def);
+                result.append(val);
+
+                last_pos = m.position() + m.length();
+            }
+            if (last_pos == 0) {
+                // no matches
+                return s;
+            }
+            result.append(s.substr(last_pos));
+            return result;
+        } catch (...) {
+            return s;
         }
     }
 
@@ -186,3 +235,4 @@ private:
 };
 
 } // namespace breeze::core
+

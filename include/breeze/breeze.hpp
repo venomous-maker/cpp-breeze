@@ -19,3 +19,4 @@
 #include <breeze/support/helpers.hpp>
 #include <breeze/support/str.hpp>
 #include <breeze/support/env.hpp>
+#include <breeze/database/connection/connection.hpp>

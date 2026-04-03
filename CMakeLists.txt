@@ -96,6 +96,18 @@ if(BREEZE_USE_HIREDIS)
   endif()
 endif()
 
+# Optional MySQL client support: attempt to find headers and library; link if available
+find_path(MYSQLCLIENT_INCLUDE_DIR mysql/mysql.h)
+find_library(MYSQLCLIENT_LIBRARY NAMES mysqlclient libmysqlclient)
+if(MYSQLCLIENT_INCLUDE_DIR AND MYSQLCLIENT_LIBRARY)
+  message(STATUS "Found MySQL client: include=${MYSQLCLIENT_INCLUDE_DIR} lib=${MYSQLCLIENT_LIBRARY}")
+  target_include_directories(breeze PUBLIC ${MYSQLCLIENT_INCLUDE_DIR})
+  target_link_libraries(breeze PUBLIC ${MYSQLCLIENT_LIBRARY})
+  add_definitions(-DBREEZE_HAVE_MYSQL=1)
+else()
+  message(STATUS "MySQL client not found on system; building with stub MySQLConnection (no real DB support).")
+endif()
+
 #install(EXPORT breezeTargets
 #   FILE breezeTargets.cmake
 #   NAMESPACE breeze::
